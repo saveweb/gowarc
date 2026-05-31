@@ -1107,14 +1107,12 @@ func TestHTTPClientDedupeEmptyPayload(t *testing.T) {
 	}
 }
 
-func TestHTTPClientDiscardHook(t *testing.T) {
+func TestHTTPClientSaveChannel(t *testing.T) {
 	var (
 		rotatorSettings = defaultRotatorSettings(t)
 		errWg           sync.WaitGroup
 		err             error
 	)
-
-	expectedReason := "429 response"
 
 	// init test HTTP endpoint
 	server := newTestImageServer(t, http.StatusTooManyRequests)
@@ -1123,14 +1121,6 @@ func TestHTTPClientDiscardHook(t *testing.T) {
 	// init the HTTP client responsible for recording HTTP(s) requests / responses
 	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{
 		RotatorSettings: rotatorSettings,
-		// Set up a discard hook to discard 429 responses
-		DiscardHook: func(resp *http.Response) (bool, string) {
-			if resp.StatusCode != http.StatusTooManyRequests {
-				// This should never be reached
-				t.Fatalf("DiscardHook called with non-429 response: %d", resp.StatusCode)
-			}
-			return true, expectedReason
-		},
 	})
 	if err != nil {
 		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
@@ -1140,33 +1130,34 @@ func TestHTTPClientDiscardHook(t *testing.T) {
 	go func() {
 		defer errWg.Done()
 		for err := range httpClient.ErrChan {
-			// validate 429 filtering as well as error reporting by url
-			discardErr, ok := err.Err.(*DiscardHookError)
-			if !ok {
-				t.Errorf("Expected DiscardHookError, got: %T, error: %v", err.Err, err)
-				continue
-			}
-			if discardErr.URL != server.URL+"/" {
-				t.Errorf("Expected URL %s, got: %s", server.URL+"/", discardErr.URL)
-			}
-			if discardErr.Reason != expectedReason {
-				t.Errorf("Expected Reason %s, got: %s", expectedReason, discardErr.Reason)
-			}
+			t.Errorf("Unexpected error: %v", err)
 		}
 	}()
+
+	saveChan := make(chan bool, 1)
 
 	req, err := http.NewRequest("GET", server.URL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	req = req.WithContext(WithSaveChannel(req.Context(), saveChan))
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
 
-	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		close(saveChan)
+	} else {
+		saveChan <- true
+	}
+
+	_, err = io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		t.Fatalf("Unexpected error reading response body: %v", err)
+	}
 
 	httpClient.Close()
 

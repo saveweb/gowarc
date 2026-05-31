@@ -19,7 +19,6 @@ type Error struct {
 type HTTPClientSettings struct {
 	RotatorSettings       *RotatorSettings
 	TempDir               string
-	DiscardHook           DiscardHook
 	DNSServers            []string
 	DNSFallback           *dns.ClientConfig
 	DedupeOptions         DedupeOptions
@@ -54,7 +53,6 @@ type CustomHTTPClient struct {
 	http.Client
 	TempDir                string
 	WARCWriterDoneChannels []chan bool
-	DiscardHook            DiscardHook
 	dedupeOptions          DedupeOptions
 	TLSHandshakeTimeout    time.Duration
 	ConnReadDeadline       time.Duration
@@ -159,9 +157,6 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	if httpClient.dedupeOptions.SizeThreshold == 0 {
 		httpClient.dedupeOptions.SizeThreshold = 2048
 	}
-
-	// Set a hook to determine if we should discard a response
-	httpClient.DiscardHook = HTTPClientSettings.DiscardHook
 
 	// Create an error channel for sending WARC errors through
 	httpClient.ErrChan = make(chan *Error)

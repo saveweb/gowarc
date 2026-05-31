@@ -37,6 +37,11 @@ const (
 	// This is used internally to retrieve the wrapped connection for advanced use cases.
 	// Use WithWrappedConnection() helper function for convenience.
 	ContextKeyWrappedConn contextKey = "wrappedConn"
+
+	// ContextKeySave is the context key for the save decision channel.
+	// Send true to save the response to WARC, or close / send false to discard it.
+	// Use WithSaveChannel() helper function for convenience.
+	ContextKeySave contextKey = "save"
 )
 
 // WithFeedbackChannel adds a feedback channel to the request context.
@@ -60,16 +65,35 @@ func WithWrappedConnection(ctx context.Context, wrappedConnChan chan *CustomConn
 	return context.WithValue(ctx, ContextKeyWrappedConn, wrappedConnChan)
 }
 
+// WithSaveChannel adds a save decision channel to the request context.
+// Send true to save the response to WARC, or close / send false to discard it.
+//
+// Example:
+//
+//	saveChan := make(chan bool, 1)
+//	req = req.WithContext(warc.WithSaveChannel(req.Context(), saveChan))
+//	resp, _ := client.Do(req)
+//	if shouldKeep(resp) {
+//	    saveChan <- true
+//	} else {
+//	    close(saveChan) // or saveChan <- false
+//	}
+func WithSaveChannel(ctx context.Context, ch chan bool) context.Context {
+	return context.WithValue(ctx, ContextKeySave, ch)
+}
+
+var errDiscarded = errors.New("response discarded")
+
 // dnsExchanger is an interface for DNS clients that can exchange messages
 type dnsExchanger interface {
 	ExchangeContext(ctx context.Context, m *dns.Msg, address string) (r *dns.Msg, rtt time.Duration, err error)
 }
 
 type customDialer struct {
-	client             *CustomHTTPClient
-	DNSConfig          *dns.ClientConfig
-	DNSClient          dnsExchanger
-	DNSRecords         *otter.Cache[string, dnsResult]
+	client     *CustomHTTPClient
+	DNSConfig  *dns.ClientConfig
+	DNSClient  dnsExchanger
+	DNSRecords *otter.Cache[string, dnsResult]
 	net.Dialer
 	disableIPv4        bool
 	disableIPv6        bool
@@ -387,9 +411,9 @@ func (d *customDialer) CustomDialTLSContext(ctx context.Context, network, addres
 
 	serverName := address
 	if host, _, err := net.SplitHostPort(address); err != nil {
-    	return nil, fmt.Errorf("failed to extract host from address %s: %w", address, err)
+		return nil, fmt.Errorf("failed to extract host from address %s: %w", address, err)
 	} else {
-    	serverName = host
+		serverName = host
 	}
 
 	cfg := &tls.Config{
@@ -461,6 +485,13 @@ func (d *customDialer) writeWARCFromConnection(ctx context.Context, reqPipe, res
 	close(recordChan)
 
 	if readErr != nil {
+		if errors.Is(readErr, errDiscarded) {
+			for record := range recordChan {
+				record.Content.Close()
+			}
+			return
+		}
+
 		d.client.ErrChan <- &Error{
 			Err:  readErr,
 			Func: "writeWARCFromConnection",
@@ -625,16 +656,21 @@ func (d *customDialer) readResponse(ctx context.Context, respPipe *io.PipeReader
 
 	targetURITxCh <- warcTargetURI
 
-	// If the Discard Hook is set and returns true, discard the response
-	if d.client.DiscardHook == nil {
-		// no hook, do nothing
-	} else if discarded, reason := d.client.DiscardHook(resp); discarded {
-		err = resp.Body.Close()
-		if err != nil {
-			return &DiscardHookError{URL: warcTargetURI, Reason: reason, Err: fmt.Errorf("closing body failed: %w", err)}
+	// Check the save channel from context
+	if v := ctx.Value(ContextKeySave); v != nil {
+		saveCh := v.(chan bool)
+		var save bool
+		select {
+		case save = <-saveCh:
+		case <-ctx.Done():
+			responseRecord.Content.Close()
+			return ctx.Err()
 		}
-
-		return &DiscardHookError{URL: warcTargetURI, Reason: reason, Err: nil}
+		if !save {
+			resp.Body.Close()
+			responseRecord.Content.Close()
+			return errDiscarded
+		}
 	}
 
 	// Calculate the WARC-Payload-Digest
