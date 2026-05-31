@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,7 +20,6 @@ import (
 	"github.com/maypok86/otter"
 	"github.com/miekg/dns"
 	tls "github.com/refraction-networking/utls"
-	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -68,8 +66,6 @@ type dnsExchanger interface {
 }
 
 type customDialer struct {
-	proxyDialer        proxy.ContextDialer
-	proxyNeedsHostname bool // true if proxy requires hostname (socks5h, http), false if can use IP (socks5)
 	client             *CustomHTTPClient
 	DNSConfig          *dns.ClientConfig
 	DNSClient          dnsExchanger
@@ -181,10 +177,6 @@ func (d *customDialer) dialParallel(ctx context.Context, network string, primary
 
 // dialSingle performs a single dial attempt
 func (d *customDialer) dialSingle(ctx context.Context, network, address string, resolvedIP net.IP) (net.Conn, error) {
-	if d.proxyDialer != nil {
-		return d.proxyDialer.DialContext(ctx, network, address)
-	}
-
 	if d.client.randomLocalIP {
 		localAddr := getLocalAddr(network, resolvedIP)
 		if localAddr != nil {
@@ -202,7 +194,7 @@ func (d *customDialer) dialSingle(ctx context.Context, network, address string, 
 	return d.DialContext(ctx, network, address)
 }
 
-func newCustomDialer(httpClient *CustomHTTPClient, proxyURL string, DialTimeout, DNSRecordsTTL, DNSResolutionTimeout time.Duration, DNSCacheSize int, DNSServers []string, DNSFallback *dns.ClientConfig, DNSConcurrency int, disableIPv4, disableIPv6 bool) (d *customDialer, err error) {
+func newCustomDialer(httpClient *CustomHTTPClient, DialTimeout, DNSRecordsTTL, DNSResolutionTimeout time.Duration, DNSCacheSize int, DNSServers []string, DNSFallback *dns.ClientConfig, DNSConcurrency int, disableIPv4, disableIPv6 bool) (d *customDialer, err error) {
 	d = new(customDialer)
 
 	d.Timeout = DialTimeout
@@ -238,26 +230,6 @@ func newCustomDialer(httpClient *CustomHTTPClient, proxyURL string, DialTimeout,
 	d.DNSClient = &dns.Client{
 		Net:     "udp",
 		Timeout: DNSResolutionTimeout,
-	}
-
-	if proxyURL != "" {
-		u, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, err
-		}
-
-		var proxyDialer proxy.Dialer
-		if proxyDialer, err = proxy.FromURL(u, d); err != nil {
-			return nil, err
-		}
-
-		d.proxyDialer = proxyDialer.(proxy.ContextDialer)
-
-		// Determine if this proxy requires hostname (remote DNS) or can use IP (local DNS)
-		// Proxies with remote DNS: socks5h, socks4a, http, https
-		// Proxies with local DNS: socks5, socks4
-		d.proxyNeedsHostname = u.Scheme == "socks5h" || u.Scheme == "socks4a" ||
-			u.Scheme == "http" || u.Scheme == "https"
 	}
 
 	return d, nil
@@ -348,18 +320,6 @@ func (d *customDialer) wrapConnection(ctx context.Context, c net.Conn, scheme st
 }
 
 func (d *customDialer) CustomDialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
-	if d.proxyDialer != nil && d.proxyNeedsHostname {
-		// Remote DNS proxy (socks5h, socks4a, http, https)
-		// Skip DNS archiving to avoid privacy leak and ensure accuracy.
-		conn, err = d.proxyDialer.DialContext(ctx, network, address)
-
-		if err != nil {
-			return nil, err
-		}
-		return d.wrapConnection(ctx, conn, "http"), nil
-	}
-
-	// Direct connection or local DNS proxy (socks5, socks4)
 	// Archive DNS and get both IPv4 and IPv6 addresses
 	ipv4, ipv6, _, err := d.archiveDNS(ctx, address)
 	if err != nil {
@@ -398,42 +358,31 @@ func (d *customDialer) CustomDialTLSContext(ctx context.Context, network, addres
 	var plainConn net.Conn
 	var err error
 
-	if d.proxyDialer != nil && d.proxyNeedsHostname {
-		// Remote DNS proxy (socks5h, socks4a, http, https)
-		// Skip DNS archiving to avoid privacy leak and ensure accuracy.
-		plainConn, err = d.proxyDialer.DialContext(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
+	// Archive DNS and get both IPv4 and IPv6 addresses
+	ipv4, ipv6, _, err := d.archiveDNS(ctx, address)
+	if err != nil {
+		return nil, err
+	}
 
-	} else {
-		// Direct connection or local DNS proxy (socks5, socks4)
-		// Archive DNS and get both IPv4 and IPv6 addresses
-		ipv4, ipv6, _, err := d.archiveDNS(ctx, address)
-		if err != nil {
-			return nil, err
-		}
+	// Extract port from address
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract port from address %s: %w", address, err)
+	}
 
-		// Extract port from address
-		_, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract port from address %s: %w", address, err)
-		}
+	// Build dial addresses for each address family
+	var ipv4Addr, ipv6Addr string
+	if ipv4 != nil {
+		ipv4Addr = net.JoinHostPort(ipv4.String(), port)
+	}
+	if ipv6 != nil {
+		ipv6Addr = net.JoinHostPort(ipv6.String(), port)
+	}
 
-		// Build dial addresses for each address family
-		var ipv4Addr, ipv6Addr string
-		if ipv4 != nil {
-			ipv4Addr = net.JoinHostPort(ipv4.String(), port)
-		}
-		if ipv6 != nil {
-			ipv6Addr = net.JoinHostPort(ipv6.String(), port)
-		}
-
-		// Use Happy Eyeballs: IPv6 primary, IPv4 fallback
-		plainConn, _, err = d.dialParallel(ctx, network, ipv6Addr, ipv4Addr, ipv6, ipv4)
-		if err != nil {
-			return nil, err
-		}
+	// Use Happy Eyeballs: IPv6 primary, IPv4 fallback
+	plainConn, _, err = d.dialParallel(ctx, network, ipv6Addr, ipv4Addr, ipv6, ipv4)
+	if err != nil {
+		return nil, err
 	}
 
 	serverName := address
@@ -575,12 +524,10 @@ func (d *customDialer) writeWARCFromConnection(ctx context.Context, reqPipe, res
 		case <-ctx.Done():
 			return
 		default:
-			if d.proxyDialer == nil {
-				switch addr := conn.RemoteAddr().(type) {
-				case *net.TCPAddr:
-					IP := addr.IP.String()
-					r.Header.Set("WARC-IP-Address", IP)
-				}
+			switch addr := conn.RemoteAddr().(type) {
+			case *net.TCPAddr:
+				IP := addr.IP.String()
+				r.Header.Set("WARC-IP-Address", IP)
 			}
 
 			r.Header.Set("WARC-Record-ID", "<urn:uuid:"+recordIDs[i]+">")

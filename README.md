@@ -12,7 +12,7 @@ A Go library for reading and writing [WARC files](https://iipc.github.io/warc-sp
 - Content deduplication (local URL-agnostic and CDX-based)
 - Configurable file rotation and size limits
 - DNS caching and custom DNS resolution (with DNS archiving)
-- Support for socks5 proxies and custom TLS configurations
+- Custom TLS configurations
 - Random local IP assignment for distributed crawling (including Linux kernel AnyIP feature)
 - Smart memory management with disk spooling options
 - IPv4/IPv6 support with configurable preferences
@@ -55,7 +55,6 @@ func main() {
 	// Configure HTTP client settings
 	clientSettings := warc.HTTPClientSettings{
 		RotatorSettings: rotatorSettings,
-		Proxy:           "socks5://proxy.example.com:1080",
 		TempDir:         "./temp",
 		DNSServers:      []string{"8.8.8.8", "8.8.4.4"},
 		DedupeOptions: warc.DedupeOptions{
@@ -115,32 +114,6 @@ func main() {
 	<-feedbackChan
 }
 ```
-
-### DNS Resolution and Proxy Behavior
-
-The library handles DNS resolution differently depending on the connection type:
-
-#### Direct Connections (No Proxy)
-- DNS is resolved locally using configured DNS servers
-- DNS queries and responses are archived in WARC files as `resource` records
-- Resolved IP addresses are cached with configurable TTL
-
-#### Local DNS Proxies (`socks5://`, `socks4://`)
-- DNS is resolved locally by gowarc
-- DNS records are archived to WARC files
-- Resolved IP addresses are sent to the proxy
-- Only one DNS query is made (no duplicate resolution)
-
-#### Remote DNS Proxies (`socks5h://`, `socks4a://`, `http://`, `https://`)
-- **DNS archiving is skipped** to prevent privacy leaks
-- Hostnames are sent directly to the proxy
-- The proxy handles DNS resolution on its end
-- Trade-offs:
-  - ✅ **Privacy**: No local DNS queries that could expose browsing activity
-  - ✅ **Accuracy**: WARC reflects the actual connection (no potential DNS mismatch)
-  - ⚠️ **No DNS WARC records**: DNS information is not archived for these connections
-
-**Important for Privacy**: When using `socks5h://` or other remote DNS proxies, your local DNS servers will not see any queries for the target domains, maintaining better privacy and anonymity.
 
 ## CLI Tools
 

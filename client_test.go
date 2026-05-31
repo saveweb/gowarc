@@ -22,8 +22,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/things-go/go-socks5"
 )
 
 // errorReadCloser simulates a failure during reading.
@@ -646,78 +644,6 @@ func TestHTTPClientDNSFailure(t *testing.T) {
 
 	httpClient.Close()
 	waitForErrors()
-}
-
-func TestHTTPClientWithProxy(t *testing.T) {
-	var (
-		rotatorSettings = defaultRotatorSettings(t)
-		err             error
-	)
-
-	// init socks5 proxy server
-	proxyServer := socks5.NewServer()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen for proxy: %v", err)
-	}
-
-	// Create a channel to signal server stop
-	stopChan := make(chan struct{})
-
-	go func() {
-		defer listener.Close()
-
-		go func() {
-			<-stopChan
-			listener.Close()
-		}()
-
-		if err := proxyServer.Serve(listener); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
-			panic(err)
-		}
-	}()
-
-	proxyAddr := listener.Addr().String()
-	// Defer sending the stop signal
-	defer close(stopChan)
-
-	// init test HTTP endpoint
-	server := newTestImageServer(t, http.StatusOK)
-	defer server.Close()
-
-	// init the HTTP client responsible for recording HTTP(s) requests / responses
-	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{
-		RotatorSettings: rotatorSettings,
-		Proxy:           fmt.Sprintf("socks5://%s", proxyAddr)})
-	if err != nil {
-		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
-	}
-	waitForErrors := drainErrChan(t, httpClient.ErrChan)
-
-	req, err := http.NewRequest("GET", server.URL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	io.Copy(io.Discard, resp.Body)
-
-	httpClient.Close()
-	waitForErrors()
-
-	files, err := filepath.Glob(rotatorSettings.OutputDirectory + "/*")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, path := range files {
-		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", []string{"26872"}, 1, server.URL+"/")
-	}
 }
 
 func TestHTTPClientConcurrent(t *testing.T) {
