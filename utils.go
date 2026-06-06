@@ -2,8 +2,8 @@ package warc
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -121,10 +121,14 @@ func NewWriter(writer io.Writer, fileName string, digestAlgorithm DigestAlgorith
 }
 
 // NewRecord creates a new WARC record.
-func NewRecord(tempDir string, fullOnDisk bool) *Record {
+func NewRecord(tempDir string) *Record {
+	content, err := spooledtempfile.NewSpooledTempFile("warc", tempDir)
+	if err != nil {
+		panic(err)
+	}
 	return &Record{
 		Header:  NewHeader(),
-		Content: spooledtempfile.NewSpooledTempFile("warc", tempDir, -1, fullOnDisk, -1),
+		Content: content,
 	}
 }
 
@@ -209,21 +213,137 @@ func checkRotatorSettings(settings *RotatorSettings) (err error) {
 }
 
 func getContentLength(rwsc spooledtempfile.ReadWriteSeekCloser) int {
-	// If the FileName leads to no existing file, it means that the SpooledTempFile
-	// never had the chance to buffer to disk instead of memory, in which case we can
-	// just read the buffer (which should be <= 2MB) and return the length
-	if rwsc.FileName() == "" {
-		rwsc.Seek(0, 0)
-		buf := new(bytes.Buffer)
-		buf.ReadFrom(rwsc)
-		return buf.Len()
-	} else {
-		// Else, we return the size of the file on disk
-		fileInfo, err := os.Stat(rwsc.FileName())
+	fileInfo, err := os.Stat(rwsc.Name())
+	if err != nil {
+		panic(err)
+	}
+	return int(fileInfo.Size())
+}
+
+func parseRequestTargetURI(scheme string, content io.ReadSeeker) (string, error) {
+	if _, err := content.Seek(0, io.SeekStart); err != nil {
+		return "", errors.New("parseRequestTargetURI: seek failed: " + err.Error())
+	}
+
+	reader := bufio.NewReaderSize(content, 4096)
+
+	const (
+		stateRequestLine = iota
+		stateHeaders
+	)
+
+	var (
+		target      string
+		host        string
+		state       = stateRequestLine
+		foundHost   = false
+		foundTarget = false
+	)
+
+	for {
+		line, err := reader.ReadString('\n')
 		if err != nil {
-			panic(err)
+			if err == io.EOF {
+				break
+			}
+			return "", errors.New("parseRequestTargetURI: read line failed: " + err.Error())
 		}
 
-		return int(fileInfo.Size())
+		line = strings.TrimSpace(line)
+
+		switch state {
+		case stateRequestLine:
+			if isHTTPRequest(line) {
+				parts := strings.Split(line, " ")
+				if len(parts) >= 2 {
+					target = parts[1]
+					foundTarget = true
+				}
+				state = stateHeaders
+			}
+		case stateHeaders:
+			if line == "" {
+				break
+			}
+			if strings.HasPrefix(strings.ToLower(line), "host: ") {
+				host = strings.TrimSpace(line[6:])
+				foundHost = true
+			}
+		}
+
+		if foundHost && foundTarget {
+			break
+		}
 	}
+
+	if !foundTarget || !foundHost {
+		return "", errors.New("parseRequestTargetURI: failed to parse host and target from request")
+	}
+
+	if strings.HasPrefix(target, scheme+"://"+host) {
+		return target, nil
+	}
+	return scheme + "://" + host + target, nil
+}
+
+func findEndOfHeadersOffset(content io.ReadSeeker) (int, error) {
+	if _, err := content.Seek(0, io.SeekStart); err != nil {
+		return -1, fmt.Errorf("FindEndOfHeadersOffset: seek failed: %w", err)
+	}
+
+	found := false
+	bigBlock := make([]byte, 0, 4)
+	block := make([]byte, 1)
+	endOfHeadersOffset := 0
+
+	for {
+		n, err := content.Read(block)
+		if n > 0 {
+			switch len(bigBlock) {
+			case 0:
+				if string(block) == "\r" {
+					bigBlock = append(bigBlock, block...)
+				}
+			case 1:
+				if string(block) == "\n" {
+					bigBlock = append(bigBlock, block...)
+				} else {
+					bigBlock = nil
+				}
+			case 2:
+				if string(block) == "\r" {
+					bigBlock = append(bigBlock, block...)
+				} else {
+					bigBlock = nil
+				}
+			case 3:
+				if string(block) == "\n" {
+					bigBlock = append(bigBlock, block...)
+					found = true
+				} else {
+					bigBlock = nil
+				}
+			}
+
+			endOfHeadersOffset++
+
+			if found {
+				break
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+
+		if err != nil {
+			return -1, err
+		}
+	}
+
+	if !found {
+		return -1, errors.New("FindEndOfHeadersOffset: could not find the end of the headers")
+	}
+
+	return endOfHeadersOffset, nil
 }

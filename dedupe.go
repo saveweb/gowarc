@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	http "github.com/bogdanfinn/fhttp"
 )
 
-// TODO: Add stats on how long dedupe HTTP requests take
 var DedupeHTTPClient = http.Client{
 	Timeout: 10 * time.Second,
 	Transport: &http.Transport{
@@ -40,17 +40,7 @@ type revisitRecord struct {
 	size         int
 }
 
-func (d *customDialer) checkLocalRevisit(digest string) revisitRecord {
-	revisit, exists := d.client.dedupeHashTable.Get(digest)
-	if exists {
-		return revisit
-	}
-
-	return revisitRecord{}
-}
-
 func checkCDXRevisit(CDXURL string, digest string, targetURI string, cookie string) (revisitRecord, error) {
-	// CDX expects no hash header. For now we need to strip it.
 	digest = strings.SplitN(digest, ":", 2)[1]
 
 	req, err := http.NewRequest("GET", CDXURL+"/web/timemap/cdx?url="+url.QueryEscape(targetURI)+"&limit=-1", nil)
@@ -94,7 +84,6 @@ func checkCDXRevisit(CDXURL string, digest string, targetURI string, cookie stri
 }
 
 func checkDoppelgangerRevisit(DoppelgangerHost string, digest string, targetURI string) (revisitRecord, error) {
-	// Doppelganger is not expecting a hash header either but this will all be rewritten ... shortly...
 	digest = strings.SplitN(digest, ":", 2)[1]
 
 	req, err := http.NewRequest("GET", DoppelgangerHost+"/api/records/"+digest+"?uri="+targetURI, nil)
@@ -102,7 +91,6 @@ func checkDoppelgangerRevisit(DoppelgangerHost string, digest string, targetURI 
 		return revisitRecord{}, err
 	}
 
-	// I don't think there's a need to create a new HTTP client, but it does look a little funky.
 	resp, err := DedupeHTTPClient.Do(req)
 	if err != nil {
 		return revisitRecord{}, err
@@ -120,7 +108,6 @@ func checkDoppelgangerRevisit(DoppelgangerHost string, digest string, targetURI 
 			URI  string `json:"uri"`
 			Date int64  `json:"date"`
 		}
-		// Parse JSON response
 		if err := json.Unmarshal(body, &DoppelgangerJSONResponse); err != nil {
 			return revisitRecord{}, err
 		}

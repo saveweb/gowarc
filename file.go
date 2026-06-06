@@ -3,7 +3,6 @@ package warc
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -18,7 +17,9 @@ func generateWARCFilename(prefix string, compression compressionType, serial *at
 	filename.WriteString("-")
 
 	now := time.Now().UTC()
-	filename.WriteString(now.Format("20060102150405") + strconv.Itoa(now.Nanosecond())[:3])
+	ns := now.Nanosecond()
+	ms := ns / 1000000
+	filename.WriteString(fmt.Sprintf("%s%03d", now.Format("20060102150405"), ms))
 	filename.WriteString("-")
 
 	var newSerial uint64

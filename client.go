@@ -1,7 +1,6 @@
 package warc
 
 import (
-	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -9,6 +8,8 @@ import (
 
 	"github.com/maypok86/otter"
 	"github.com/miekg/dns"
+	http "github.com/bogdanfinn/fhttp"
+	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 type Error struct {
@@ -33,14 +34,21 @@ type HTTPClientSettings struct {
 	MaxReadBeforeTruncate int
 	DecompressBody        bool
 	FollowRedirects       bool
-	FullOnDisk            bool
-	MaxRAMUsageFraction   float64
 	VerifyCerts           bool
 	RandomLocalIP         bool
 	DisableIPv4           bool
 	DisableIPv6           bool
 	IPv6AnyIP             bool
 	DigestAlgorithm       DigestAlgorithm
+	EnableKeepAlive       bool
+	ClientProfile         profiles.ClientProfile
+	RandomTLSExtensionOrder bool
+	MaxIdleConns          int
+	MaxIdleConnsPerHost   int
+	IdleConnTimeout       time.Duration
+	EnableHTTP2           bool
+	EnableHTTP3           bool
+	ForceProtocol         string // "http/1.1", "h2", "h3"
 }
 
 type CustomHTTPClient struct {
@@ -50,23 +58,23 @@ type CustomHTTPClient struct {
 	ErrChan                  chan *Error
 	WARCWriter               chan *RecordBatch
 	interfacesWatcherStarted chan bool
-	http.Client
-	TempDir                string
-	WARCWriterDoneChannels []chan bool
-	dedupeOptions          DedupeOptions
-	TLSHandshakeTimeout    time.Duration
-	ConnReadDeadline       time.Duration
-	MaxReadBeforeTruncate  int
-	verifyCerts            bool
-	FullOnDisk             bool
-	DigestAlgorithm        DigestAlgorithm
-	closeDNSCache          func()
-	closeDedupeCache       func()
-	// MaxRAMUsageFraction is the fraction of system RAM above which we'll force spooling to disk. For example, 0.5 = 50%.
-	// If set to <= 0, the default value is DefaultMaxRAMUsageFraction.
-	MaxRAMUsageFraction float64
-	randomLocalIP       bool
-	DataTotal           *atomic.Int64
+	protoClient             protocolClient
+	TempDir                  string
+	WARCWriterDoneChannels   []chan bool
+	dedupeOptions            DedupeOptions
+	TLSHandshakeTimeout      time.Duration
+	ConnReadDeadline         time.Duration
+	MaxReadBeforeTruncate    int
+	verifyCerts              bool
+	DigestAlgorithm          DigestAlgorithm
+	closeDNSCache            func()
+	closeDedupeCache         func()
+	randomLocalIP            bool
+	DataTotal                *atomic.Int64
+	enableKeepAlive          bool
+	keepAliveMaxIdle         int
+	keepAliveIdleTimeout     time.Duration
+	DecompressBody           bool
 
 	CDXDedupeTotalBytes          *atomic.Int64
 	DoppelgangerDedupeTotalBytes *atomic.Int64
@@ -75,12 +83,26 @@ type CustomHTTPClient struct {
 	CDXDedupeTotal          *atomic.Int64
 	DoppelgangerDedupeTotal *atomic.Int64
 	LocalDedupeTotal        *atomic.Int64
+
+	dialTimeout          time.Duration
+	dnsRecordsTTL        time.Duration
+	dnsResolutionTimeout time.Duration
+	dnsCacheSize         int
+	dnsServers           []string
+	dnsFallback          *dns.ClientConfig
+	dnsConcurrency       int
+	disableIPv4          bool
+	disableIPv6          bool
+	tlsProfile           *TLSProfile
 }
 
 func (c *CustomHTTPClient) Close() error {
 	var wg sync.WaitGroup
 	c.WaitGroup.Wait()
-	c.CloseIdleConnections()
+
+	if c.protoClient != nil {
+		c.protoClient.Close()
+	}
 
 	close(c.WARCWriter)
 
@@ -106,10 +128,52 @@ func (c *CustomHTTPClient) Close() error {
 	return nil
 }
 
+func (c *CustomHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	resp, _, err := c.protoClient.Do(req.Context(), req)
+	return resp, err
+}
+
+func (c *CustomHTTPClient) Get(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.Do(req)
+}
+
+func (c *CustomHTTPClient) Head(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodHead, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.Do(req)
+}
+
+func (c *CustomHTTPClient) Post(url, contentType string, body interface{}) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.Do(req)
+}
+
+func (c *CustomHTTPClient) CloseIdleConnections() {
+	if c.protoClient != nil {
+		c.protoClient.Close()
+	}
+}
+
+func (c *CustomHTTPClient) GetConnPoolStats() *ConnPoolStats {
+	if h1, ok := c.protoClient.(*http11Client); ok {
+		stats := h1.pool.Stats()
+		return &stats
+	}
+	return nil
+}
+
 func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient *CustomHTTPClient, err error) {
 	httpClient = new(CustomHTTPClient)
 
-	// Initialize counters
 	httpClient.DataTotal = &DataTotal
 
 	httpClient.CDXDedupeTotalBytes = &CDXDedupeTotalBytes
@@ -120,7 +184,6 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	httpClient.DoppelgangerDedupeTotal = &DoppelgangerDedupeTotal
 	httpClient.LocalDedupeTotal = &LocalDedupeTotal
 
-	// Configure random local IP
 	httpClient.randomLocalIP = HTTPClientSettings.RandomLocalIP
 	if httpClient.randomLocalIP {
 		httpClient.interfacesWatcherStop = make(chan bool)
@@ -129,14 +192,11 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 		<-httpClient.interfacesWatcherStarted
 	}
 
-	// Set block and payload digest algorithm (it's important to set that before we configure the WARC writer)
 	httpClient.DigestAlgorithm = HTTPClientSettings.DigestAlgorithm
 	HTTPClientSettings.RotatorSettings.digestAlgorithm = HTTPClientSettings.DigestAlgorithm
 
-	// Toggle deduplication options and create map for deduplication records.
 	httpClient.dedupeOptions = HTTPClientSettings.DedupeOptions
 
-	// Set default dedupe cache size to 1M entries if not specified
 	dedupeCacheSize := HTTPClientSettings.DedupeOptions.DedupeCacheSize
 	if dedupeCacheSize == 0 {
 		dedupeCacheSize = 1_000_000
@@ -153,19 +213,14 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 		time.Sleep(1 * time.Second)
 	}
 
-	// Set default deduplication threshold to 2048 bytes
 	if httpClient.dedupeOptions.SizeThreshold == 0 {
 		httpClient.dedupeOptions.SizeThreshold = 2048
 	}
 
-	// Create an error channel for sending WARC errors through
 	httpClient.ErrChan = make(chan *Error)
 
-	// Toggle verification of certificates
-	// InsecureSkipVerify expects the opposite of the verifyCerts flag, as such we flip it.
 	httpClient.verifyCerts = !HTTPClientSettings.VerifyCerts
 
-	// Configure WARC temporary file directory
 	if HTTPClientSettings.TempDir != "" {
 		httpClient.TempDir = HTTPClientSettings.TempDir
 		err = os.MkdirAll(httpClient.TempDir, os.ModePerm)
@@ -174,80 +229,88 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 		}
 	}
 
-	// Configure if we are only storing responses only on disk or in memory and on disk.
-	httpClient.FullOnDisk = HTTPClientSettings.FullOnDisk
-
-	// Configure the maximum RAM usage fraction
-	httpClient.MaxRAMUsageFraction = HTTPClientSettings.MaxRAMUsageFraction
-
-	// Configure our max read before we start truncating records
 	if HTTPClientSettings.MaxReadBeforeTruncate == 0 {
 		httpClient.MaxReadBeforeTruncate = 1000000000
 	} else {
 		httpClient.MaxReadBeforeTruncate = HTTPClientSettings.MaxReadBeforeTruncate
 	}
 
-	// Configure the waitgroup
 	httpClient.WaitGroup = new(WaitGroupWithCount)
 
-	// Configure WARC writer
 	httpClient.WARCWriter, httpClient.WARCWriterDoneChannels, err = HTTPClientSettings.RotatorSettings.NewWARCRotator()
 	if err != nil {
 		return nil, err
 	}
 
-	// Configure HTTP client
-	if !HTTPClientSettings.FollowRedirects {
-		httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
-	}
-
-	// Verify timeouts and set default values
 	if HTTPClientSettings.DialTimeout == 0 {
 		HTTPClientSettings.DialTimeout = 10 * time.Second
 	}
-
 	if HTTPClientSettings.ResponseHeaderTimeout == 0 {
 		HTTPClientSettings.ResponseHeaderTimeout = 10 * time.Second
 	}
-
 	if HTTPClientSettings.TLSHandshakeTimeout == 0 {
 		HTTPClientSettings.TLSHandshakeTimeout = 10 * time.Second
 	}
-
 	if HTTPClientSettings.DNSResolutionTimeout == 0 {
 		HTTPClientSettings.DNSResolutionTimeout = 5 * time.Second
 	}
-
 	if HTTPClientSettings.DNSRecordsTTL == 0 {
 		HTTPClientSettings.DNSRecordsTTL = 5 * time.Minute
 	}
-
 	if HTTPClientSettings.DNSCacheSize == 0 {
 		HTTPClientSettings.DNSCacheSize = 10_000
 	}
 
 	httpClient.TLSHandshakeTimeout = HTTPClientSettings.TLSHandshakeTimeout
 	httpClient.ConnReadDeadline = HTTPClientSettings.ConnReadDeadline
+	httpClient.DecompressBody = HTTPClientSettings.DecompressBody
+	httpClient.enableKeepAlive = HTTPClientSettings.EnableKeepAlive
+	httpClient.keepAliveMaxIdle = HTTPClientSettings.MaxIdleConns
+	httpClient.keepAliveIdleTimeout = HTTPClientSettings.IdleConnTimeout
 
-	// Configure custom dialer / transport
-	customDialer, err := newCustomDialer(httpClient, HTTPClientSettings.DialTimeout, HTTPClientSettings.DNSRecordsTTL, HTTPClientSettings.DNSResolutionTimeout, HTTPClientSettings.DNSCacheSize, HTTPClientSettings.DNSServers, HTTPClientSettings.DNSFallback, HTTPClientSettings.DNSConcurrency, HTTPClientSettings.DisableIPv4, HTTPClientSettings.DisableIPv6)
-	if err != nil {
-		return nil, err
+	httpClient.dialTimeout = HTTPClientSettings.DialTimeout
+	httpClient.dnsRecordsTTL = HTTPClientSettings.DNSRecordsTTL
+	httpClient.dnsResolutionTimeout = HTTPClientSettings.DNSResolutionTimeout
+	httpClient.dnsCacheSize = HTTPClientSettings.DNSCacheSize
+	httpClient.dnsServers = HTTPClientSettings.DNSServers
+	httpClient.dnsFallback = HTTPClientSettings.DNSFallback
+	httpClient.dnsConcurrency = HTTPClientSettings.DNSConcurrency
+	httpClient.disableIPv4 = HTTPClientSettings.DisableIPv4
+	httpClient.disableIPv6 = HTTPClientSettings.DisableIPv6
+
+	httpClient.tlsProfile = NewTLSProfile(HTTPClientSettings.ClientProfile, HTTPClientSettings.RandomTLSExtensionOrder)
+
+	switch HTTPClientSettings.ForceProtocol {
+	case "h2":
+		h2c, err := newHTTP2Client(httpClient, false, false)
+		if err != nil {
+			return nil, err
+		}
+		httpClient.protoClient = h2c
+	case "h3":
+		h3c, err := newHTTP2Client(httpClient, false, true)
+		if err != nil {
+			return nil, err
+		}
+		httpClient.protoClient = h3c
+	default:
+		if HTTPClientSettings.EnableHTTP2 || HTTPClientSettings.EnableHTTP3 {
+			h2c, err := newHTTP2Client(httpClient, HTTPClientSettings.EnableHTTP3, false)
+			if err != nil {
+				return nil, err
+			}
+			httpClient.protoClient = h2c
+		} else {
+			httpClient.protoClient = newHTTP11Client(httpClient)
+		}
 	}
 
 	httpClient.closeDNSCache = func() {
-		customDialer.DNSRecords.Close()
+		if h1, ok := httpClient.protoClient.(*http11Client); ok {
+			h1.pool.dialer.DNSRecords.Close()
+		}
 		time.Sleep(1 * time.Second)
 	}
-
-	customTransport, err := newCustomTransport(customDialer, HTTPClientSettings.DecompressBody, HTTPClientSettings.TLSHandshakeTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	httpClient.Transport = customTransport
 
 	return httpClient, nil
 }

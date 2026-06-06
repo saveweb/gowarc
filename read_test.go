@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
+	"github.com/bogdanfinn/fhttp"
 	"os"
 	"os/exec"
 	"strings"
@@ -43,7 +43,7 @@ func testFileHash(t *testing.T, path string) {
 			t.Fatalf("failed to get digest: %v", err)
 		}
 
-		if hash != record.Header["WARC-Block-Digest"] {
+		if hash != record.Header.Get("WARC-Block-Digest") {
 			err = record.Content.Close()
 			if err != nil {
 				t.Fatalf("failed to close record content: %v", err)
@@ -524,7 +524,7 @@ func BenchmarkBasicRead(b *testing.B) {
 				break
 			}
 
-			if hash != record.Header["WARC-Block-Digest"] {
+			if hash != record.Header.Get("WARC-Block-Digest") {
 				err = record.Content.Close()
 				if err != nil {
 					b.Fatalf("failed to close record content: %v", err)

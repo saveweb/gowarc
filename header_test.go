@@ -9,7 +9,8 @@ func TestHeaderMethods(t *testing.T) {
 	rotatorSettings := NewRotatorSettings()
 
 	rotatorSettings.WarcinfoContent.Set("test-header", "test-value")
-	if rotatorSettings.WarcinfoContent["test-header"] != "test-value" {
+	val := rotatorSettings.WarcinfoContent.Get("test-header")
+	if val != "test-value" {
 		t.Error("Failed to set warcinfo header")
 	}
 
@@ -18,7 +19,7 @@ func TestHeaderMethods(t *testing.T) {
 	}
 
 	rotatorSettings.WarcinfoContent.Del("test-header")
-	if rotatorSettings.WarcinfoContent["test-header"] != "" {
+	if rotatorSettings.WarcinfoContent.Get("test-header") != "" {
 		t.Error("Failed to delete warcinfo header")
 	}
 }

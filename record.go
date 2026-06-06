@@ -6,7 +6,7 @@ import (
 
 func (c *CustomHTTPClient) WriteRecord(WARCTargetURI, WARCType, contentType, payloadString string, payloadReader io.Reader) {
 	// Initialize the record
-	metadataRecord := NewRecord("", false)
+	metadataRecord := NewRecord("")
 
 	// Set the headers
 	metadataRecord.Header.Set("WARC-Type", WARCType)

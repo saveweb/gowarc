@@ -20,7 +20,6 @@ import (
 // -------- Perf knobs (env tunables) --------
 
 const (
-	envMaxInMemSize         = "WARCMaxInMemorySize"        // in bytes; warc record content spooling threshold; if not set, calls NewSpooledTempFile with -1 which will default internally to MaxInMemorySize (1MB)
 	envDecompressedBufSize  = "WARCDecompressedBufSize"    // in bytes; defines the bufio reader used by the decompression layer; if not set, defaults to defaultDecompressedSize (256 KiB)
 	envZstdDecoderConc      = "WARCZstdDecoderConcurrency" // >1 enables parallel Zstd decode ; if not set, defaults to defaultZstdDecoderConc (1)
 	defaultZstdDecoderConc  = 1                            // default Zstd decoder concurrency (1 == no parallelism)
@@ -29,8 +28,6 @@ const (
 
 // Reader stores the bufio.Reader and gzip.Reader for a WARC file
 type Reader struct {
-	threshold int
-
 	src       *bufio.Reader       // raw concatenated .gz input - wrapped in countingReader
 	cr        *countingReader     // counts compressed bytes actually consumed
 	dec       io.ReadCloser       // current decompressor (gz/plain/…)
@@ -84,15 +81,6 @@ func (c *countingReader) ReadByte() (byte, error) {
 
 // NewReader returns a new WARC reader
 func NewReader(reader io.Reader) (*Reader, error) {
-	threshold := -1
-	if s := os.Getenv(envMaxInMemSize); s != "" {
-		if v, err := strconv.Atoi(s); err == nil {
-			threshold = v
-		} else {
-			return nil, err
-		}
-	}
-
 	decompSize := defaultDecompressedSize
 	if s := os.Getenv(envDecompressedBufSize); s != "" {
 		if v, err := strconv.Atoi(s); err == nil && v > 0 {
@@ -104,7 +92,6 @@ func NewReader(reader io.Reader) (*Reader, error) {
 
 	return &Reader{
 		src:           bufio.NewReaderSize(reader, decompSize), // buffer the source reader (mainly to avoid small syscalls)
-		threshold:     threshold,
 		decompBufSize: decompSize,
 	}, nil
 }
@@ -287,7 +274,10 @@ func (r *Reader) ReadRecord(opts ...ReadOpts) (*Record, error) {
 		return nil, fmt.Errorf("parsing Content-Length: %w", err)
 	}
 
-	buf := spooledtempfile.NewSpooledTempFile("warc", "", r.threshold, false, -1)
+	buf, err := spooledtempfile.NewSpooledTempFile("warc", "")
+	if err != nil {
+		return nil, fmt.Errorf("creating temp file: %w", err)
+	}
 	bufOK := false
 	defer func() { // close spooledtempfile if error occurs
 		if !bufOK {

@@ -12,8 +12,8 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/http"
-	"net/http/httptest"
+	"github.com/bogdanfinn/fhttp"
+	"github.com/bogdanfinn/fhttp/httptest"
 	"os"
 	"path"
 	"path/filepath"
@@ -1394,49 +1394,6 @@ func TestWARCWritingWithDisallowedCertificate(t *testing.T) {
 	for _, path := range files {
 		// note: we are actually expecting nothing here, as such, 0 for expected total. This may error if certificates aren't being verified correctly.
 		testFileSingleHashCheck(t, path, "n/a", []string{"0"}, 0, server.URL+"/")
-	}
-}
-
-func TestHTTPClientFullOnDisk(t *testing.T) {
-	var (
-		rotatorSettings = defaultRotatorSettings(t)
-		err             error
-	)
-
-	// init test HTTP endpoint
-	server := newTestImageServer(t, http.StatusOK)
-	defer server.Close()
-
-	// init the HTTP client responsible for recording HTTP(s) requests / responses
-	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings, FullOnDisk: true})
-	if err != nil {
-		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
-	}
-	waitForErrors := drainErrChan(t, httpClient.ErrChan)
-
-	req, err := http.NewRequest("GET", server.URL, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	io.Copy(io.Discard, resp.Body)
-
-	httpClient.Close()
-	waitForErrors()
-
-	files, err := filepath.Glob(rotatorSettings.OutputDirectory + "/*")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, path := range files {
-		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", []string{"26872"}, 1, server.URL+"/")
 	}
 }
 

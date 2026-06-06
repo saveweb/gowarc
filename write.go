@@ -95,9 +95,11 @@ func (w *Writer) WriteRecord(r *Record) (recordID string, err error) {
 		r.Header.Set("WARC-Block-Digest", digest)
 	}
 
-	for key, value := range r.Header {
-		if _, err := io.WriteString(w.BufWriter, fmt.Sprintf("%s: %s\r\n", key, value)); err != nil {
-			return recordID, err
+	for key, values := range r.Header {
+		for _, value := range values {
+			if _, err := io.WriteString(w.BufWriter, fmt.Sprintf("%s: %s\r\n", key, value)); err != nil {
+				return recordID, err
+			}
 		}
 	}
 
@@ -128,9 +130,9 @@ func (w *Writer) WriteRecord(r *Record) (recordID string, err error) {
 }
 
 // WriteInfoRecord method can be used to write an information record to the WARC file and flush the data
-func (w *Writer) WriteInfoRecord(payload map[string]string) (recordID string, err error) {
+func (w *Writer) WriteInfoRecord(payload Header) (recordID string, err error) {
 	// Initialize the record
-	infoRecord := NewRecord("", false)
+	infoRecord := NewRecord("")
 
 	// Set the headers
 	infoRecord.Header.Set("WARC-Date", time.Now().UTC().Format(time.RFC3339Nano))
@@ -139,8 +141,10 @@ func (w *Writer) WriteInfoRecord(payload map[string]string) (recordID string, er
 	infoRecord.Header.Set("Content-Type", "application/warc-fields")
 
 	// Write the payload
-	for k, v := range payload {
-		fmt.Fprintf(infoRecord.Content, "%s: %s\r\n", k, v)
+	for k, vv := range payload {
+		for _, v := range vv {
+			fmt.Fprintf(infoRecord.Content, "%s: %s\r\n", k, v)
+		}
 	}
 
 	// Generate WARC-Block-Digest
