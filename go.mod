@@ -3,8 +3,8 @@ module git.saveweb.org/saveweb/gowarc
 go 1.26.2
 
 require (
-	git.saveweb.org/saveweb/fhttp v0.6.8
-	git.saveweb.org/saveweb/tls-client v1.14.0
+	git.saveweb.org/saveweb/fhttp v0.0.0-20260618012320-2cf8b40ec9a3
+	git.saveweb.org/saveweb/tls-client v0.0.0-20260618012328-083a11771580
 	github.com/bogdanfinn/utls v1.7.7-barnius
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6
@@ -19,11 +19,11 @@ require (
 )
 
 require (
+	git.saveweb.org/saveweb/quic-go-utls v0.0.0-20260618013958-4c970643c2d4 // indirect
+	git.saveweb.org/saveweb/websocket v0.0.0-20260618013959-ec955dc77209 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
 	github.com/bdandy/go-socks4 v1.2.3 // indirect
-	github.com/bogdanfinn/quic-go-utls v1.0.9-utls // indirect
-	github.com/bogdanfinn/websocket v1.5.5-barnius // indirect
 	github.com/dolthub/maphash v0.1.0 // indirect
 	github.com/gammazero/deque v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
