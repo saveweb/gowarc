@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"git.saveweb.org/saveweb/fhttp"
+	"github.com/saveweb/fhttp"
 	"os"
 	"os/exec"
 	"strings"

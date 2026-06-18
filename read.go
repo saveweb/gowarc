@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"sync"
 
-	"git.saveweb.org/saveweb/gowarc/pkg/spooledtempfile"
+	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )

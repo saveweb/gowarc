@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"git.saveweb.org/saveweb/gowarc/pkg/spooledtempfile"
+	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"github.com/klauspost/compress/zstd"
 )
 

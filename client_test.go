@@ -12,7 +12,7 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"git.saveweb.org/saveweb/fhttp"
+	"github.com/saveweb/fhttp"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"git.saveweb.org/saveweb/fhttp/httptest"
+	"github.com/saveweb/fhttp/httptest"
 )
 
 // errorReadCloser simulates a failure during reading.

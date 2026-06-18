@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	http "git.saveweb.org/saveweb/fhttp"
-	"git.saveweb.org/saveweb/tls-client/profiles"
+	http "github.com/saveweb/fhttp"
+	"github.com/saveweb/tls-client/profiles"
 	"github.com/maypok86/otter"
 	"github.com/miekg/dns"
 )

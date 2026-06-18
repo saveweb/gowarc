@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"os"
 
-	"git.saveweb.org/saveweb/gowarc/cmd/warc/extract"
-	"git.saveweb.org/saveweb/gowarc/cmd/warc/mend"
-	"git.saveweb.org/saveweb/gowarc/cmd/warc/verify"
+	"github.com/saveweb/gowarc/cmd/warc/extract"
+	"github.com/saveweb/gowarc/cmd/warc/mend"
+	"github.com/saveweb/gowarc/cmd/warc/verify"
 	"github.com/spf13/cobra"
 )
 

@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	http "git.saveweb.org/saveweb/fhttp"
-	"git.saveweb.org/saveweb/fhttp/httputil"
-	tls_client "git.saveweb.org/saveweb/tls-client"
+	http "github.com/saveweb/fhttp"
+	"github.com/saveweb/fhttp/httputil"
+	tls_client "github.com/saveweb/tls-client"
 	"github.com/google/uuid"
-	"git.saveweb.org/saveweb/gowarc/pkg/spooledtempfile"
+	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"golang.org/x/sync/errgroup"
 
 	gzip "github.com/klauspost/compress/gzip"

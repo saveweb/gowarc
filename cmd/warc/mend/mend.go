@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"git.saveweb.org/saveweb/gowarc/cmd/warc/utils"
+	"github.com/saveweb/gowarc/cmd/warc/utils"
 	"github.com/spf13/cobra"
 )
 
