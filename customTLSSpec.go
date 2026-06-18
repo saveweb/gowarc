@@ -2,7 +2,7 @@ package warc
 
 import (
 	tls "github.com/bogdanfinn/utls"
-	"github.com/bogdanfinn/tls-client/profiles"
+	"git.saveweb.org/saveweb/tls-client/profiles"
 )
 
 type TLSProfile struct {

@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	http "git.saveweb.org/saveweb/fhttp"
+	"git.saveweb.org/saveweb/tls-client/profiles"
 	"github.com/maypok86/otter"
 	"github.com/miekg/dns"
-	http "github.com/bogdanfinn/fhttp"
-	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 type Error struct {
@@ -18,37 +18,37 @@ type Error struct {
 }
 
 type HTTPClientSettings struct {
-	RotatorSettings       *RotatorSettings
-	TempDir               string
-	DNSServers            []string
-	DNSFallback           *dns.ClientConfig
-	DedupeOptions         DedupeOptions
-	DialTimeout           time.Duration
-	ResponseHeaderTimeout time.Duration
-	DNSResolutionTimeout  time.Duration
-	DNSRecordsTTL         time.Duration
-	DNSCacheSize          int
-	DNSConcurrency        int
-	TLSHandshakeTimeout   time.Duration
-	ConnReadDeadline      time.Duration
-	MaxReadBeforeTruncate int
-	DecompressBody        bool
-	FollowRedirects       bool
-	VerifyCerts           bool
-	RandomLocalIP         bool
-	DisableIPv4           bool
-	DisableIPv6           bool
-	IPv6AnyIP             bool
-	DigestAlgorithm       DigestAlgorithm
-	EnableKeepAlive       bool
-	ClientProfile         profiles.ClientProfile
+	RotatorSettings         *RotatorSettings
+	TempDir                 string
+	DNSServers              []string
+	DNSFallback             *dns.ClientConfig
+	DedupeOptions           DedupeOptions
+	DialTimeout             time.Duration
+	ResponseHeaderTimeout   time.Duration
+	DNSResolutionTimeout    time.Duration
+	DNSRecordsTTL           time.Duration
+	DNSCacheSize            int
+	DNSConcurrency          int
+	TLSHandshakeTimeout     time.Duration
+	ConnReadDeadline        time.Duration
+	MaxReadBeforeTruncate   int
+	DecompressBody          bool
+	FollowRedirects         bool
+	InsecureSkipVerifyCerts bool
+	RandomLocalIP           bool
+	DisableIPv4             bool
+	DisableIPv6             bool
+	IPv6AnyIP               bool
+	DigestAlgorithm         DigestAlgorithm
+	EnableKeepAlive         bool
+	ClientProfile           profiles.ClientProfile
 	RandomTLSExtensionOrder bool
-	MaxIdleConns          int
-	MaxIdleConnsPerHost   int
-	IdleConnTimeout       time.Duration
-	EnableHTTP2           bool
-	EnableHTTP3           bool
-	ForceProtocol         string // "http/1.1", "h2", "h3"
+	MaxIdleConns            int
+	MaxIdleConnsPerHost     int
+	IdleConnTimeout         time.Duration
+	EnableHTTP2             bool
+	EnableHTTP3             bool
+	ForceProtocol           string // "http/1.1", "h2", "h3"
 }
 
 type CustomHTTPClient struct {
@@ -58,14 +58,14 @@ type CustomHTTPClient struct {
 	ErrChan                  chan *Error
 	WARCWriter               chan *RecordBatch
 	interfacesWatcherStarted chan bool
-	protoClient             protocolClient
+	protoClient              protocolClient
 	TempDir                  string
 	WARCWriterDoneChannels   []chan bool
 	dedupeOptions            DedupeOptions
 	TLSHandshakeTimeout      time.Duration
 	ConnReadDeadline         time.Duration
 	MaxReadBeforeTruncate    int
-	verifyCerts              bool
+	insecureSkipVerifyCerts  bool
 	DigestAlgorithm          DigestAlgorithm
 	closeDNSCache            func()
 	closeDedupeCache         func()
@@ -219,7 +219,7 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 
 	httpClient.ErrChan = make(chan *Error)
 
-	httpClient.verifyCerts = !HTTPClientSettings.VerifyCerts
+	httpClient.insecureSkipVerifyCerts = HTTPClientSettings.InsecureSkipVerifyCerts
 
 	if HTTPClientSettings.TempDir != "" {
 		httpClient.TempDir = HTTPClientSettings.TempDir

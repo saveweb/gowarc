@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 
-	http "github.com/bogdanfinn/fhttp"
+	http "git.saveweb.org/saveweb/fhttp"
 )
 
 type protocolInfo struct {

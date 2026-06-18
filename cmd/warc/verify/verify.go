@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	warc "github.com/internetarchive/gowarc"
-	"github.com/internetarchive/gowarc/cmd/warc/utils"
+	warc "git.saveweb.org/saveweb/gowarc"
+	"git.saveweb.org/saveweb/gowarc/cmd/warc/utils"
 	"github.com/spf13/cobra"
 )
 

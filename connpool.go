@@ -36,12 +36,12 @@ type connPool struct {
 }
 
 type ConnPoolStats struct {
-	TotalHosts   int
-	IdleConns    int
-	MaxIdle      int
-	IdleTimeout  time.Duration
-	TotalDials   int64
-	ActiveConns  int64
+	TotalHosts  int
+	IdleConns   int
+	MaxIdle     int
+	IdleTimeout time.Duration
+	TotalDials  int64
+	ActiveConns int64
 }
 
 func (p *connPool) Stats() ConnPoolStats {
@@ -212,7 +212,7 @@ func (d *customDialer) dialTLSNew(ctx context.Context, network, address string) 
 
 	cfg := &tls.Config{
 		ServerName:         serverName,
-		InsecureSkipVerify: d.client.verifyCerts,
+		InsecureSkipVerify: d.client.insecureSkipVerifyCerts,
 	}
 
 	tlsConn := tls.UClient(plainConn, cfg, d.tlsProfile.clientHelloID,

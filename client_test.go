@@ -12,8 +12,7 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"github.com/bogdanfinn/fhttp"
-	"github.com/bogdanfinn/fhttp/httptest"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,6 +21,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"git.saveweb.org/saveweb/fhttp/httptest"
 )
 
 // errorReadCloser simulates a failure during reading.
@@ -501,9 +502,9 @@ func TestHTTPClientTLSHandshakeTimeout(t *testing.T) {
 	//    The critical part here is enforcing the handshake timeout.
 	//    (Exact field names may differ based on your library.)
 	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{
-		RotatorSettings:     rotatorSettings,
-		TLSHandshakeTimeout: 1 * time.Second, // <--- The key line
-		VerifyCerts:         true,            // or "VerifyCerts: false" depending on your lib
+		RotatorSettings:         rotatorSettings,
+		TLSHandshakeTimeout:     1 * time.Second, // <--- The key line
+		InsecureSkipVerifyCerts: true,            // or "VerifyCerts: false" depending on your lib
 	})
 	if err != nil {
 		t.Fatalf("Unable to init WARC writing HTTP client: %v", err)
@@ -1361,7 +1362,7 @@ func TestWARCWritingWithDisallowedCertificate(t *testing.T) {
 	defer server.Close()
 
 	// init the HTTP client responsible for recording HTTP(s) requests / responses
-	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings, VerifyCerts: true})
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings, InsecureSkipVerifyCerts: true})
 	if err != nil {
 		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
 	}
@@ -1970,6 +1971,145 @@ func BenchmarkConcurrentOver2MBZStandard(b *testing.B) {
 }
 
 // generateTLSConfig creates a self-signed certificate for testing.
+func TestHTTPClientMixedCaseSchemeViaGet(t *testing.T) {
+	var (
+		rotatorSettings = defaultRotatorSettings(t)
+		err             error
+	)
+
+	server := newTestImageServer(t, http.StatusOK)
+	defer server.Close()
+
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings})
+	if err != nil {
+		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
+	}
+	waitForErrors := drainErrChan(t, httpClient.ErrChan)
+
+	mixedCaseURL := strings.Replace(server.URL, "http://", "HttP://", 1)
+
+	resp, err := httpClient.Get(mixedCaseURL + "/testdata/image.svg")
+	if err != nil {
+		t.Fatalf("Request with mixed-case scheme failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	io.Copy(io.Discard, resp.Body)
+
+	httpClient.Close()
+	waitForErrors()
+
+	files, err := filepath.Glob(rotatorSettings.OutputDirectory + "/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedURL := server.URL + "/testdata/image.svg"
+	for _, path := range files {
+		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", []string{"26872"}, 1, expectedURL)
+	}
+}
+
+func TestHTTPClientMixedCaseSchemeViaDo(t *testing.T) {
+	var (
+		rotatorSettings = defaultRotatorSettings(t)
+		err             error
+	)
+
+	server := newTestImageServer(t, http.StatusOK)
+	defer server.Close()
+
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings})
+	if err != nil {
+		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
+	}
+	waitForErrors := drainErrChan(t, httpClient.ErrChan)
+
+	mixedCaseURL := strings.Replace(server.URL, "http://", "HttP://", 1)
+
+	req, err := http.NewRequest("GET", mixedCaseURL+"/testdata/image.svg", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Request with mixed-case scheme failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	io.Copy(io.Discard, resp.Body)
+
+	httpClient.Close()
+	waitForErrors()
+
+	files, err := filepath.Glob(rotatorSettings.OutputDirectory + "/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedURL := server.URL + "/testdata/image.svg"
+	for _, path := range files {
+		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", []string{"26872"}, 1, expectedURL)
+	}
+}
+
+func TestHTTPClientManuallySetMixedCaseScheme(t *testing.T) {
+	var (
+		rotatorSettings = defaultRotatorSettings(t)
+		err             error
+	)
+
+	server := newTestImageServer(t, http.StatusOK)
+	defer server.Close()
+
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings})
+	if err != nil {
+		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
+	}
+	waitForErrors := drainErrChan(t, httpClient.ErrChan)
+
+	req, err := http.NewRequest("GET", server.URL+"/testdata/image.svg", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req.URL.Scheme = "HttP"
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatalf("Request with manually set mixed-case scheme failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	io.Copy(io.Discard, resp.Body)
+
+	httpClient.Close()
+	waitForErrors()
+
+	files, err := filepath.Glob(rotatorSettings.OutputDirectory + "/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedURL := server.URL + "/testdata/image.svg"
+	for _, path := range files {
+		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", []string{"26872"}, 1, expectedURL)
+	}
+}
+
 func generateTLSConfig() *tls.Config {
 	// 1) Generate a private key.
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)

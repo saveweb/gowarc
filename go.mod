@@ -1,10 +1,10 @@
-module github.com/internetarchive/gowarc
+module git.saveweb.org/saveweb/gowarc
 
 go 1.26.2
 
 require (
-	github.com/bogdanfinn/fhttp v0.6.8
-	github.com/bogdanfinn/tls-client v1.14.0
+	git.saveweb.org/saveweb/fhttp v0.6.8
+	git.saveweb.org/saveweb/tls-client v1.14.0
 	github.com/bogdanfinn/utls v1.7.7-barnius
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.6

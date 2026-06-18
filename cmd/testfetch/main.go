@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	http "github.com/bogdanfinn/fhttp"
-	warc "github.com/internetarchive/gowarc"
+	http "git.saveweb.org/saveweb/fhttp"
+	warc "git.saveweb.org/saveweb/gowarc"
 )
 
 func main() {

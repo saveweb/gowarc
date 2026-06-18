@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	http "github.com/bogdanfinn/fhttp"
+	http "git.saveweb.org/saveweb/fhttp"
 )
 
 var DedupeHTTPClient = http.Client{

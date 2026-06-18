@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/internetarchive/gowarc/cmd/warc/verify"
+	"git.saveweb.org/saveweb/gowarc/cmd/warc/verify"
 	"github.com/spf13/cobra"
 )
 

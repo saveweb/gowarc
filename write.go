@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/internetarchive/gowarc/pkg/spooledtempfile"
+	"git.saveweb.org/saveweb/gowarc/pkg/spooledtempfile"
 )
 
 type Compressor interface {

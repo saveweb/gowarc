@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	http "github.com/bogdanfinn/fhttp"
-	"github.com/bogdanfinn/fhttp/httputil"
-	tls_client "github.com/bogdanfinn/tls-client"
+	http "git.saveweb.org/saveweb/fhttp"
+	"git.saveweb.org/saveweb/fhttp/httputil"
+	tls_client "git.saveweb.org/saveweb/tls-client"
 	"github.com/google/uuid"
-	"github.com/internetarchive/gowarc/pkg/spooledtempfile"
+	"git.saveweb.org/saveweb/gowarc/pkg/spooledtempfile"
 	"golang.org/x/sync/errgroup"
 
 	gzip "github.com/klauspost/compress/gzip"
@@ -25,9 +25,9 @@ import (
 )
 
 type http2Client struct {
-	client       *CustomHTTPClient
-	tlsClient    tls_client.HttpClient
-	enableH3     bool
+	client    *CustomHTTPClient
+	tlsClient tls_client.HttpClient
+	enableH3  bool
 }
 
 func newHTTP2Client(client *CustomHTTPClient, enableH3 bool, forceH3 bool) (*http2Client, error) {
@@ -38,7 +38,7 @@ func newHTTP2Client(client *CustomHTTPClient, enableH3 bool, forceH3 bool) (*htt
 		tls_client.WithTimeoutSeconds(30),
 	}
 
-	if !client.verifyCerts {
+	if client.insecureSkipVerifyCerts {
 		opts = append(opts, tls_client.WithInsecureSkipVerify())
 	}
 

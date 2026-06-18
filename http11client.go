@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	http "github.com/bogdanfinn/fhttp"
+	http "git.saveweb.org/saveweb/fhttp"
 	utls "github.com/bogdanfinn/utls"
 	"github.com/google/uuid"
-	"github.com/internetarchive/gowarc/pkg/spooledtempfile"
+	"git.saveweb.org/saveweb/gowarc/pkg/spooledtempfile"
 	"golang.org/x/sync/errgroup"
 
 	gzip "github.com/klauspost/compress/gzip"

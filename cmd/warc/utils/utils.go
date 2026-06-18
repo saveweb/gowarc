@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	warc "github.com/internetarchive/gowarc"
+	warc "git.saveweb.org/saveweb/gowarc"
 	"github.com/spf13/cobra"
 )
 
