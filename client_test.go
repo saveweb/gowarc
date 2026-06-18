@@ -12,7 +12,7 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"net/http"
+	"git.saveweb.org/saveweb/fhttp"
 	"os"
 	"path"
 	"path/filepath"
