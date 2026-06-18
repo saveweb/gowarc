@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [ master ]
+    branches: [main]
   pull_request:
-    branches: [ master ]
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,46 +17,46 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-    - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
-    - name: Set up Go
-      uses: actions/setup-go@v6
-      with:
-        go-version-file: 'go.mod'
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
 
-    - name: Build
-      run: go build -v ./...
+      - name: Build
+        run: go build -v ./...
 
-    - name: Goroutine leak detector
-      if: matrix.os == 'ubuntu-latest'
-      continue-on-error: true
-      run: go test -c -o tests && for test in $(go test -list . | grep -E "^(Test|Example)"); do ./tests -test.run "^$test\$" &>/dev/null && echo -e "$test passed\n" || echo -e "$test failed\n"; done
+      - name: Goroutine leak detector
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        run: go test -c -o tests && for test in $(go test -list . | grep -E "^(Test|Example)"); do ./tests -test.run "^$test\$" &>/dev/null && echo -e "$test passed\n" || echo -e "$test failed\n"; done
 
-    - name: Test (Full Suite including spooledtempfile)
-      if: matrix.os == 'ubuntu-latest'
-      run: go test -race -v ./...
+      - name: Test (Full Suite including spooledtempfile)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -race -v ./...
 
-    - name: Test (spooledtempfile only for macos)
-      if: matrix.os == 'macos-latest'
-      run: go test -race -v ./pkg/spooledtempfile/...
-    
-    - name: Test (spooledtempfile only for windows)
-      if: matrix.os == 'windows-latest'
-      run: go test -race -v ./pkg/spooledtempfile/...
+      - name: Test (spooledtempfile only for macos)
+        if: matrix.os == 'macos-latest'
+        run: go test -race -v ./pkg/spooledtempfile/...
 
-    - name: Benchmarks
-      if: matrix.os == 'ubuntu-latest'
-      run: go test -bench=. -benchmem -run=^$ ./...
+      - name: Test (spooledtempfile only for windows)
+        if: matrix.os == 'windows-latest'
+        run: go test -race -v ./pkg/spooledtempfile/...
 
-    # Cross-compilation verification
-    - name: Cross-compile for macOS (from Linux)
-      if: matrix.os == 'ubuntu-latest'
-      run: GOOS=darwin GOARCH=amd64 go build ./...
-    
-    - name: Cross-compile for windows (from Linux)
-      if: matrix.os == 'ubuntu-latest'
-      run: GOOS=windows GOARCH=amd64 go build ./...
+      - name: Benchmarks
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -bench=. -benchmem -run=^$ ./...
 
-    - name: Cross-compile for Linux (from macOS)
-      if: matrix.os == 'macos-latest'
-      run: GOOS=linux GOARCH=amd64 go build ./...
+      # Cross-compilation verification
+      - name: Cross-compile for macOS (from Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: GOOS=darwin GOARCH=amd64 go build ./...
+
+      - name: Cross-compile for windows (from Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: GOOS=windows GOARCH=amd64 go build ./...
+
+      - name: Cross-compile for Linux (from macOS)
+        if: matrix.os == 'macos-latest'
+        run: GOOS=linux GOARCH=amd64 go build ./...
