@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	http "github.com/saveweb/fhttp"
 	"github.com/saveweb/fhttp/httputil"
-	tls_client "github.com/saveweb/tls-client"
-	"github.com/google/uuid"
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
+	tls_client "github.com/saveweb/tls-client"
 	"golang.org/x/sync/errgroup"
 
 	gzip "github.com/klauspost/compress/gzip"
@@ -108,6 +108,10 @@ func (c *http2Client) Do(ctx context.Context, req *http.Request) (*http.Response
 	scheme := "https"
 	if req.URL != nil && req.URL.Scheme == "http" {
 		scheme = "http"
+	}
+
+	if req.Header.Get("User-Agent") == "" && c.client.defaultUserAgent != "" {
+		req.Header.Set("User-Agent", c.client.defaultUserAgent)
 	}
 
 	reqTemp, err := spooledtempfile.NewSpooledTempFile("warc-req", c.client.TempDir)

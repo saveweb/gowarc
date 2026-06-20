@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	http "github.com/saveweb/fhttp"
-	"github.com/saveweb/tls-client/profiles"
 	"github.com/maypok86/otter"
 	"github.com/miekg/dns"
+	http "github.com/saveweb/fhttp"
+	"github.com/saveweb/tls-client/profiles"
 )
 
 type Error struct {
@@ -31,7 +31,7 @@ type HTTPClientSettings struct {
 	DNSConcurrency          int
 	TLSHandshakeTimeout     time.Duration
 	ConnReadDeadline        time.Duration
-	MaxReadBeforeTruncate   int
+	MaxReadBeforeTruncate   int // todo
 	DecompressBody          bool
 	FollowRedirects         bool
 	InsecureSkipVerifyCerts bool
@@ -41,6 +41,7 @@ type HTTPClientSettings struct {
 	IPv6AnyIP               bool
 	DigestAlgorithm         DigestAlgorithm
 	EnableKeepAlive         bool
+	DefaultUserAgent        string
 	ClientProfile           profiles.ClientProfile
 	RandomTLSExtensionOrder bool
 	MaxIdleConns            int
@@ -64,7 +65,7 @@ type CustomHTTPClient struct {
 	dedupeOptions            DedupeOptions
 	TLSHandshakeTimeout      time.Duration
 	ConnReadDeadline         time.Duration
-	MaxReadBeforeTruncate    int
+	MaxReadBeforeTruncate    int // todo
 	insecureSkipVerifyCerts  bool
 	DigestAlgorithm          DigestAlgorithm
 	closeDNSCache            func()
@@ -75,6 +76,7 @@ type CustomHTTPClient struct {
 	keepAliveMaxIdle         int
 	keepAliveIdleTimeout     time.Duration
 	DecompressBody           bool
+	defaultUserAgent         string
 
 	CDXDedupeTotalBytes          *atomic.Int64
 	DoppelgangerDedupeTotalBytes *atomic.Int64
@@ -267,6 +269,8 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	httpClient.enableKeepAlive = HTTPClientSettings.EnableKeepAlive
 	httpClient.keepAliveMaxIdle = HTTPClientSettings.MaxIdleConns
 	httpClient.keepAliveIdleTimeout = HTTPClientSettings.IdleConnTimeout
+
+	httpClient.defaultUserAgent = HTTPClientSettings.DefaultUserAgent
 
 	httpClient.dialTimeout = HTTPClientSettings.DialTimeout
 	httpClient.dnsRecordsTTL = HTTPClientSettings.DNSRecordsTTL

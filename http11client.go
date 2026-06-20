@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	http "github.com/saveweb/fhttp"
 	utls "github.com/bogdanfinn/utls"
 	"github.com/google/uuid"
+	http "github.com/saveweb/fhttp"
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"golang.org/x/sync/errgroup"
 
@@ -103,6 +103,10 @@ func (c *http11Client) Do(ctx context.Context, req *http.Request) (*http.Respons
 		}
 	} else {
 		req.Header.Set("Connection", "close")
+	}
+
+	if req.Header.Get("User-Agent") == "" && c.client.defaultUserAgent != "" {
+		req.Header.Set("User-Agent", c.client.defaultUserAgent)
 	}
 
 	pc, err := c.pool.getOrCreate(ctx, host, scheme)
