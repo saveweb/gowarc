@@ -255,15 +255,6 @@ func (c *http2Client) extractProtocolInfo(host string, proto string) *protocolIn
 		if connInfo.NegotiatedProtocol != "" {
 			pi.Protocol = connInfo.NegotiatedProtocol
 		}
-		if connInfo.RemoteAddr != nil {
-			pi.RemoteAddr = connInfo.RemoteAddr
-			switch a := connInfo.RemoteAddr.(type) {
-			case *net.TCPAddr:
-				pi.DNSAddresses = []net.IP{a.IP}
-			case *net.UDPAddr:
-				pi.DNSAddresses = []net.IP{a.IP}
-			}
-		}
 	}
 
 	return pi
@@ -388,13 +379,6 @@ func (c *http2Client) writeWARCFromConnection(ctx context.Context, scheme string
 			}
 			if pi.CipherSuite != 0 {
 				r.Header.Set("WARC-Cipher-Suite", tlsCipherSuiteName(pi.CipherSuite))
-			}
-			if len(pi.DNSAddresses) > 0 {
-				var ips []string
-				for _, ip := range pi.DNSAddresses {
-					ips = append(ips, ip.String())
-				}
-				r.Header.Set("WARC-DNS-Resolved-IP", strings.Join(ips, ","))
 			}
 
 			r.Header.Set("WARC-Record-ID", "<urn:uuid:"+recordIDs[i]+">")

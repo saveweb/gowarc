@@ -9,11 +9,10 @@ import (
 )
 
 type protocolInfo struct {
-	Protocol     string
-	TLSVersion   uint16
-	CipherSuite  uint16
-	RemoteAddr   net.Addr
-	DNSAddresses []net.IP
+	Protocol    string
+	TLSVersion  uint16
+	CipherSuite uint16
+	RemoteAddr  net.Addr
 }
 
 func (pi *protocolInfo) ProtocolWARCValue() string {

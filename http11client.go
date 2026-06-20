@@ -76,10 +76,6 @@ func (c *http11Client) extractProtocolInfo(pc *pooledConn, scheme string) *proto
 		}
 	}
 
-	if ua, ok := pc.conn.RemoteAddr().(*net.TCPAddr); ok {
-		pi.DNSAddresses = []net.IP{ua.IP}
-	}
-
 	return pi
 }
 
@@ -469,14 +465,6 @@ func (c *http11Client) writeWARCFromConnection(ctx context.Context, reqTemp, res
 			if pi.CipherSuite != 0 {
 				r.Header.Set("WARC-Cipher-Suite", tlsCipherSuiteName(pi.CipherSuite))
 			}
-			if len(pi.DNSAddresses) > 0 {
-				var ips []string
-				for _, ip := range pi.DNSAddresses {
-					ips = append(ips, ip.String())
-				}
-				r.Header.Set("WARC-DNS-Resolved-IP", strings.Join(ips, ","))
-			}
-
 			r.Header.Set("WARC-Record-ID", "<urn:uuid:"+recordIDs[i]+">")
 
 			if i == len(recordIDs)-1 {
