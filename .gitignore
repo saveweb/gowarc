@@ -8,3 +8,4 @@ output/**
 !testdata/warcs/*.warc.gz
 !testdata/warcs/*.warc.gz.open
 cmd/warc/warc
+/testfetch
