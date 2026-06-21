@@ -29,7 +29,7 @@ func (c *CustomHTTPClient) WriteRecord(WARCTargetURI, WARCType, contentType, pay
 	}
 
 	// Add it to the batch
-	batch := NewRecordBatch(make(chan struct{}, 1))
+	batch := NewRecordBatch(make(chan FeedbackEvent, 1))
 	batch.Records = append(batch.Records, metadataRecord)
 
 	c.WARCWriter <- batch

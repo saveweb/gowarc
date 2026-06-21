@@ -17,12 +17,12 @@ import (
 type contextKey string
 
 const (
-	ContextKeyFeedback   contextKey = "feedback"
+	ContextKeyFeedback    contextKey = "feedback"
 	ContextKeyWrappedConn contextKey = "wrappedConn"
-	ContextKeySave       contextKey = "save"
+	ContextKeySave        contextKey = "save"
 )
 
-func WithFeedbackChannel(ctx context.Context, feedbackChan chan struct{}) context.Context {
+func WithFeedbackChannel(ctx context.Context, feedbackChan chan FeedbackEvent) context.Context {
 	return context.WithValue(ctx, ContextKeyFeedback, feedbackChan)
 }
 
@@ -41,11 +41,11 @@ type dnsExchanger interface {
 }
 
 type customDialer struct {
-	client             *CustomHTTPClient
-	DNSConfig          *dns.ClientConfig
-	DNSClient          dnsExchanger
-	DNSRecords         *otter.Cache[string, dnsResult]
-	tlsProfile         *TLSProfile
+	client     *CustomHTTPClient
+	DNSConfig  *dns.ClientConfig
+	DNSClient  dnsExchanger
+	DNSRecords *otter.Cache[string, dnsResult]
+	tlsProfile *TLSProfile
 	net.Dialer
 	disableIPv4        bool
 	disableIPv6        bool
@@ -93,9 +93,9 @@ func (d *customDialer) dialParallel(ctx context.Context, network string, primary
 		var ip net.IP
 		var netType string
 		if primary {
-			addr, ip, netType = primaryAddr, primaryIP, network + "6"
+			addr, ip, netType = primaryAddr, primaryIP, network+"6"
 		} else {
-			addr, ip, netType = fallbackAddr, fallbackIP, network + "4"
+			addr, ip, netType = fallbackAddr, fallbackIP, network+"4"
 		}
 		conn, err := d.dialSingle(ctx, netType, addr, ip)
 		select {

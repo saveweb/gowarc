@@ -27,12 +27,16 @@ type Writer struct {
 	ParallelGZIP    bool
 }
 
+type FeedbackEvent struct {
+	RecordsIDs []string // WARC-Record-ID header values of the records that have been written
+}
+
 // RecordBatch is a structure that contains a bunch of
 // records to be written at the same time, and a common
 // capture timestamp. FeedbackChan is used to signal
 // when the records have been written.
 type RecordBatch struct {
-	FeedbackChan chan struct{}
+	FeedbackChan chan FeedbackEvent
 	CaptureTime  string
 	Records      []*Record
 }

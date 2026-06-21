@@ -97,7 +97,7 @@ func main() {
 		panic(err)
 	}
 
-	feedbackChan := make(chan struct{}, 1)
+	feedbackChan := make(chan warc.FeedbackEvent, 1)
 	req = req.WithContext(warc.WithFeedbackChannel(req.Context(), feedbackChan))
 
 	resp, err := client.Do(req)

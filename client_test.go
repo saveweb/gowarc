@@ -12,7 +12,6 @@ import (
 	"io"
 	"math/big"
 	"net"
-	"github.com/saveweb/fhttp"
 	"os"
 	"path"
 	"path/filepath"
@@ -22,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	http "github.com/saveweb/fhttp"
 	"github.com/saveweb/fhttp/httptest"
 )
 
@@ -434,7 +434,7 @@ func TestHTTPClientWithFeedbackChan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	feedbackCh := make(chan struct{}, 1)
+	feedbackCh := make(chan FeedbackEvent, 1)
 	req = req.WithContext(WithFeedbackChannel(req.Context(), feedbackCh))
 
 	resp, err := httpClient.Do(req)
@@ -504,7 +504,7 @@ func TestHTTPClientTLSHandshakeTimeout(t *testing.T) {
 	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{
 		RotatorSettings:         rotatorSettings,
 		TLSHandshakeTimeout:     1 * time.Second, // <--- The key line
-		InsecureSkipVerifyCerts: true,            // or "VerifyCerts: false" depending on your lib
+		InsecureSkipVerifyCerts: false,           // no handshake, so, no insecure cert verification at all.
 	})
 	if err != nil {
 		t.Fatalf("Unable to init WARC writing HTTP client: %v", err)

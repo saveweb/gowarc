@@ -211,6 +211,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				}
 			}
 
+			recordsIDs := make([]string, 0, len(recordBatch.Records))
 			// Write all the records of the record batch
 			for _, record := range recordBatch.Records {
 				warcWriter.Reset(warcFile)
@@ -222,10 +223,11 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				if err != nil {
 					panic(err)
 				}
+				recordsIDs = append(recordsIDs, record.Header.Get("WARC-Record-ID"))
 			}
 
 			if recordBatch.FeedbackChan != nil {
-				recordBatch.FeedbackChan <- struct{}{}
+				recordBatch.FeedbackChan <- FeedbackEvent{RecordsIDs: recordsIDs}
 				close(recordBatch.FeedbackChan)
 			}
 		} else {

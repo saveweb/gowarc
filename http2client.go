@@ -269,10 +269,14 @@ func (c *http2Client) writeWARCFromConnection(ctx context.Context, scheme string
 		return
 	}
 
-	var feedbackChan chan struct{}
+	var feedbackChan chan FeedbackEvent
 	batchSent := false
 	if ctx.Value(ContextKeyFeedback) != nil {
-		feedbackChan = ctx.Value(ContextKeyFeedback).(chan struct{})
+		var ok bool
+		feedbackChan, ok = ctx.Value(ContextKeyFeedback).(chan FeedbackEvent)
+		if !ok {
+			panic("feedback channel is not of type chan FeedbackEvent")
+		}
 		defer func() {
 			if !batchSent {
 				close(feedbackChan)

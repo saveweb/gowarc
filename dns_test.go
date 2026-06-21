@@ -164,7 +164,7 @@ func setupMock() (*customDialer, func()) {
 			case batch := <-d.client.WARCWriter:
 				// Send feedback immediately to unblock writer
 				if batch != nil && batch.FeedbackChan != nil {
-					batch.FeedbackChan <- struct{}{}
+					batch.FeedbackChan <- FeedbackEvent{}
 				}
 			case <-stopDrain:
 				// Drain remaining items
@@ -172,7 +172,7 @@ func setupMock() (*customDialer, func()) {
 					select {
 					case batch := <-d.client.WARCWriter:
 						if batch != nil && batch.FeedbackChan != nil {
-							batch.FeedbackChan <- struct{}{}
+							batch.FeedbackChan <- FeedbackEvent{}
 						}
 					default:
 						return

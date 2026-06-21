@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"github.com/klauspost/compress/zstd"
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 )
@@ -134,7 +133,7 @@ func NewRecord(tempDir string) *Record {
 }
 
 // NewRecordBatch creates a record batch, it also initialize the capture time.
-func NewRecordBatch(feedbackChan chan struct{}) *RecordBatch {
+func NewRecordBatch(feedbackChan chan FeedbackEvent) *RecordBatch {
 	return &RecordBatch{
 		CaptureTime:  time.Now().UTC().Format(time.RFC3339Nano),
 		FeedbackChan: feedbackChan,
