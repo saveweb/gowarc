@@ -214,7 +214,6 @@ func (d *customDialer) lookupIP(ctx context.Context, address string, recordType 
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(address), recordType)
 
-	// Record the DNS response
 	recordTypeStr := "TYPE=A"
 	if recordType == dns.TypeAAAA {
 		recordTypeStr = "TYPE=AAAA"

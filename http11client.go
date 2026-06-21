@@ -489,7 +489,7 @@ func (c *http11Client) writeWARCFromConnection(ctx context.Context, reqTemp, res
 			}
 
 			r.Header.Set("WARC-Block-Digest", digest)
-			r.Header.Set("Content-Length", strconv.Itoa(getContentLength(r.Content)))
+			r.Header.Set("Content-Length", strconv.FormatInt(getContentLength(r.Content), 10))
 
 			if c.client.dedupeOptions.LocalDedupe {
 				if r.Header.Get("WARC-Type") == "response" && !slicesContains(emptyPayloadDigests, r.Header.Get("WARC-Payload-Digest")) {

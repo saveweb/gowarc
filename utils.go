@@ -12,6 +12,7 @@ import (
 
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"github.com/klauspost/compress/zstd"
+	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 )
 
 // splitKeyValue parses WARC record header fields.
@@ -212,12 +213,12 @@ func checkRotatorSettings(settings *RotatorSettings) (err error) {
 	return nil
 }
 
-func getContentLength(rwsc spooledtempfile.ReadWriteSeekCloser) int {
+func getContentLength(rwsc spooledtempfile.ReadWriteSeekCloser) int64 {
 	fileInfo, err := os.Stat(rwsc.Name())
 	if err != nil {
 		panic(err)
 	}
-	return int(fileInfo.Size())
+	return fileInfo.Size()
 }
 
 func parseRequestTargetURI(scheme string, content io.ReadSeeker) (string, error) {

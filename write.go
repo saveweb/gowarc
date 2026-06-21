@@ -81,7 +81,7 @@ func (w *Writer) WriteRecord(r *Record) (recordID string, err error) {
 
 	// Write headers
 	if r.Header.Get("Content-Length") == "" {
-		r.Header.Set("Content-Length", strconv.Itoa(getContentLength(r.Content)))
+		r.Header.Set("Content-Length", strconv.FormatInt(getContentLength(r.Content), 10))
 	}
 
 	if r.Header.Get("WARC-Block-Digest") == "" {
