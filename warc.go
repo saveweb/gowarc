@@ -227,7 +227,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 			}
 
 			if recordBatch.FeedbackChan != nil {
-				recordBatch.FeedbackChan <- FeedbackEvent{RecordsIDs: recordsIDs}
+				recordBatch.FeedbackChan <- recordsIDs
 				close(recordBatch.FeedbackChan)
 			}
 		} else {

@@ -27,9 +27,7 @@ type Writer struct {
 	ParallelGZIP    bool
 }
 
-type FeedbackEvent struct {
-	RecordsIDs []string // WARC-Record-ID header values of the records that have been written
-}
+type FeedbackEvent []string // WARC-Record-ID header values of the records that have been written
 
 // RecordBatch is a structure that contains a bunch of
 // records to be written at the same time, and a common
