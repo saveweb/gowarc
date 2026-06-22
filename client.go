@@ -62,7 +62,6 @@ type CustomHTTPClient struct {
 	protoClient              protocolClient
 	TempDir                  string
 	warcWriterDoneChannels   []chan bool
-	warcFilenameFeedbackChan chan string
 	dedupeOptions            DedupeOptions
 	TLSHandshakeTimeout      time.Duration
 	ConnReadDeadline         time.Duration
@@ -118,10 +117,6 @@ func (c *CustomHTTPClient) Close() error {
 	}
 
 	wg.Wait()
-
-	if c.warcFilenameFeedbackChan != nil {
-		close(c.warcFilenameFeedbackChan)
-	}
 
 	close(c.ErrChan)
 
@@ -287,8 +282,6 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	httpClient.dnsConcurrency = HTTPClientSettings.DNSConcurrency
 	httpClient.disableIPv4 = HTTPClientSettings.DisableIPv4
 	httpClient.disableIPv6 = HTTPClientSettings.DisableIPv6
-
-	httpClient.warcFilenameFeedbackChan = HTTPClientSettings.RotatorSettings.WARCFilenameFeedbackChan
 
 	httpClient.tlsProfile = NewTLSProfile(HTTPClientSettings.ClientProfile, HTTPClientSettings.RandomTLSExtensionOrder)
 

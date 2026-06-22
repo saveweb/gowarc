@@ -59,7 +59,7 @@ type RotatorSettings struct {
 	WARCWriterPoolSize int
 	// You can get warc filename from this channel after each WARC file is written and closed and renamed to non-temp name.
 	// - `nil` to disable
-	// - Client.Close() will close this channel after all WARC writers have finished
+	// - it's your responsibility to close this channel
 	WARCFilenameFeedbackChan chan string
 }
 
