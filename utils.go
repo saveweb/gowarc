@@ -127,7 +127,9 @@ func NewRecord(tempDir string) *Record {
 		panic(err)
 	}
 	return &Record{
-		Header:  NewHeader(),
+		RecordInfo: RecordInfo{
+			Header: NewHeader(),
+		},
 		Content: content,
 	}
 }

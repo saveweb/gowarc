@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"github.com/klauspost/compress/zstd"
+	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	"github.com/ulikunitz/xz"
 )
 
@@ -323,11 +323,13 @@ func (r *Reader) ReadRecord(opts ...ReadOpts) (*Record, error) {
 	}
 
 	record := &Record{
-		Header:  header,
+		RecordInfo: RecordInfo{
+			Header:  header,
+			Version: warcVersion,
+			Offset:  offset,
+			Size:    size,
+		},
 		Content: buf,
-		Version: warcVersion,
-		Offset:  offset,
-		Size:    size,
 	}
 
 	return record, nil

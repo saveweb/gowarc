@@ -131,16 +131,16 @@ func (w *Writer) FlushAndCloseCompressor() (err error) {
 	}
 }
 
-func getNextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64) (nextWARCFilename string) {
-	nextWARCFilename = generateWARCFilename(prefix, compression, serial)
-	_, err := os.Stat(path.Join(outputDir, nextWARCFilename))
+func getNextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64) (nextWARCFilenameWithOpenExt string) {
+	nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial)
+	_, err := os.Stat(path.Join(outputDir, nextWARCFilenameWithOpenExt))
 	for !errors.Is(err, os.ErrNotExist) {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			panic(err)
 		}
 
-		nextWARCFilename = generateWARCFilename(prefix, compression, serial)
-		_, err = os.Stat(path.Join(outputDir, nextWARCFilename))
+		nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial)
+		_, err = os.Stat(path.Join(outputDir, nextWARCFilenameWithOpenExt))
 	}
 
 	return
@@ -148,18 +148,18 @@ func getNextWARCFilename(outputDir, prefix string, compression compressionType, 
 
 func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done chan bool, serial *atomic.Uint64, dictionary []byte) {
 	var (
-		currentFileName         = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial)
-		currentWarcinfoRecordID string
+		currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial)
+		currentWarcinfoRecordID    string
 	)
 
 	// Create and open the initial file
-	warcFile, err := os.Create(filepath.Join(settings.OutputDirectory, currentFileName))
+	warcFile, err := os.Create(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt))
 	if err != nil {
 		panic(err)
 	}
 
 	// Initialize WARC writer (write dictionary if specified)
-	warcWriter, err := NewWriter(warcFile, currentFileName, settings.digestAlgorithm, settings.Compression, true, dictionary)
+	warcWriter, err := NewWriter(warcFile, currentFileNameWithOpenExt, settings.digestAlgorithm, settings.Compression, true, dictionary)
 	if err != nil {
 		panic(err)
 	}
@@ -186,20 +186,20 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 					panic(err)
 				}
 				// The WARC file is renamed to remove the .open suffix
-				err := os.Rename(path.Join(settings.OutputDirectory, currentFileName), strings.TrimSuffix(path.Join(settings.OutputDirectory, currentFileName), ".open"))
+				err := os.Rename(path.Join(settings.OutputDirectory, currentFileNameWithOpenExt), strings.TrimSuffix(path.Join(settings.OutputDirectory, currentFileNameWithOpenExt), ".open"))
 				if err != nil {
 					panic(err)
 				}
 
 				// Create the new file and automatically increment the serial inside of GenerateWarcFileName
-				currentFileName = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial)
-				warcFile, err = os.Create(filepath.Join(settings.OutputDirectory, currentFileName))
+				currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial)
+				warcFile, err = os.Create(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt))
 				if err != nil {
 					panic(err)
 				}
 
 				// Initialize new WARC writer
-				warcWriter, err = NewWriter(warcFile, currentFileName, settings.digestAlgorithm, settings.Compression, true, dictionary)
+				warcWriter, err = NewWriter(warcFile, currentFileNameWithOpenExt, settings.digestAlgorithm, settings.Compression, true, dictionary)
 				if err != nil {
 					panic(err)
 				}
@@ -211,7 +211,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				}
 			}
 
-			recordsIDs := make([]string, 0, len(recordBatch.Records))
+			recordsIDs := make([]RecordEvent, 0, len(recordBatch.Records))
 			// Write all the records of the record batch
 			for _, record := range recordBatch.Records {
 				warcWriter.Reset(warcFile)
@@ -223,7 +223,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				if err != nil {
 					panic(err)
 				}
-				recordsIDs = append(recordsIDs, record.Header.Get("WARC-Record-ID"))
+				recordsIDs = append(recordsIDs, RecordEvent{RecordInfo: record.RecordInfo, WARCFilename: strings.TrimSuffix(currentFileNameWithOpenExt, ".open")})
 			}
 
 			if recordBatch.FeedbackChan != nil {
@@ -244,7 +244,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 			}
 
 			// The WARC file is renamed to remove the .open suffix
-			fullPath := filepath.Join(settings.OutputDirectory, currentFileName)
+			fullPath := filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt)
 			err := os.Rename(fullPath, strings.TrimSuffix(fullPath, ".open"))
 			if err != nil {
 				panic(err)

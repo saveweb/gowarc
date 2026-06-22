@@ -27,7 +27,7 @@ type Writer struct {
 	ParallelGZIP    bool
 }
 
-type FeedbackEvent []string // WARC-Record-ID header values of the records that have been written
+type FeedbackEvent []RecordEvent // WARC-Record-ID header values of the records that have been written
 
 // RecordBatch is a structure that contains a bunch of
 // records to be written at the same time, and a common
@@ -39,13 +39,23 @@ type RecordBatch struct {
 	Records      []*Record
 }
 
-// Record represents a WARC record.
-type Record struct {
+type RecordInfo struct {
 	Header  Header
-	Content spooledtempfile.ReadWriteSeekCloser
-	Version string // WARC/1.0, WARC/1.1 ...
 	Offset  int64  // Offset of the record start (-1 if WARC file type is not supported yet)
 	Size    int64  // COMPRESSED size of the record (gzip member): header + deflate data + trailer. (-1 if WARC file type is not supported yet)
+	Version string // WARC/1.0, WARC/1.1 ...
+}
+
+// Record represents a WARC record.
+type Record struct {
+	RecordInfo
+	Content spooledtempfile.ReadWriteSeekCloser
+}
+
+// a record that has been written to a WARC file.
+type RecordEvent struct {
+	RecordInfo
+	WARCFilename string // WARC filename, no .open extension
 }
 
 // WriteRecord writes a record to the underlying WARC file and flushes the data.

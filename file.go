@@ -9,8 +9,8 @@ import (
 )
 
 // generateWARCFilename generate a WARC file name following recommendations of the specs:
-// Prefix-Timestamp-Serial-Crawlhost.warc.gz
-func generateWARCFilename(prefix string, compression compressionType, serial *atomic.Uint64) string {
+// Prefix-Timestamp-Serial-Crawlhost.warc.gz.open
+func generateWARCFilename(prefix string, compression compressionType, serial *atomic.Uint64) (WARCFilenameWithOpenExt string) {
 	var filename strings.Builder
 
 	filename.WriteString(prefix)
