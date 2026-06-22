@@ -61,7 +61,8 @@ type CustomHTTPClient struct {
 	interfacesWatcherStarted chan bool
 	protoClient              protocolClient
 	TempDir                  string
-	WARCWriterDoneChannels   []chan bool
+	warcWriterDoneChannels   []chan bool
+	warcFilenameFeedbackChan chan string
 	dedupeOptions            DedupeOptions
 	TLSHandshakeTimeout      time.Duration
 	ConnReadDeadline         time.Duration
@@ -108,8 +109,8 @@ func (c *CustomHTTPClient) Close() error {
 
 	close(c.WARCWriter)
 
-	wg.Add(len(c.WARCWriterDoneChannels))
-	for _, doneChan := range c.WARCWriterDoneChannels {
+	wg.Add(len(c.warcWriterDoneChannels))
+	for _, doneChan := range c.warcWriterDoneChannels {
 		go func(done chan bool) {
 			defer wg.Done()
 			<-done
@@ -117,6 +118,11 @@ func (c *CustomHTTPClient) Close() error {
 	}
 
 	wg.Wait()
+
+	if c.warcFilenameFeedbackChan != nil {
+		close(c.warcFilenameFeedbackChan)
+	}
+
 	close(c.ErrChan)
 
 	if c.randomLocalIP {
@@ -239,7 +245,7 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 
 	httpClient.WaitGroup = new(WaitGroupWithCount)
 
-	httpClient.WARCWriter, httpClient.WARCWriterDoneChannels, err = HTTPClientSettings.RotatorSettings.NewWARCRotator()
+	httpClient.WARCWriter, httpClient.warcWriterDoneChannels, err = HTTPClientSettings.RotatorSettings.NewWARCRotator()
 	if err != nil {
 		return nil, err
 	}
@@ -281,6 +287,8 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	httpClient.dnsConcurrency = HTTPClientSettings.DNSConcurrency
 	httpClient.disableIPv4 = HTTPClientSettings.DisableIPv4
 	httpClient.disableIPv6 = HTTPClientSettings.DisableIPv6
+
+	httpClient.warcFilenameFeedbackChan = HTTPClientSettings.RotatorSettings.WARCFilenameFeedbackChan
 
 	httpClient.tlsProfile = NewTLSProfile(HTTPClientSettings.ClientProfile, HTTPClientSettings.RandomTLSExtensionOrder)
 

@@ -57,6 +57,10 @@ type RotatorSettings struct {
 	WARCSize float64
 	// WARCWriterPoolSize defines the number of parallel WARC writers
 	WARCWriterPoolSize int
+	// You can get warc filename from this channel after each WARC file is written and closed and renamed to non-temp name.
+	// - `nil` to disable
+	// - Client.Close() will close this channel after all WARC writers have finished
+	WARCFilenameFeedbackChan chan string
 }
 
 var (
@@ -186,9 +190,13 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 					panic(err)
 				}
 				// The WARC file is renamed to remove the .open suffix
-				err := os.Rename(path.Join(settings.OutputDirectory, currentFileNameWithOpenExt), strings.TrimSuffix(path.Join(settings.OutputDirectory, currentFileNameWithOpenExt), ".open"))
+				err := os.Rename(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt), strings.TrimSuffix(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt), ".open"))
 				if err != nil {
 					panic(err)
+				}
+
+				if settings.WARCFilenameFeedbackChan != nil {
+					settings.WARCFilenameFeedbackChan <- strings.TrimSuffix(currentFileNameWithOpenExt, ".open")
 				}
 
 				// Create the new file and automatically increment the serial inside of GenerateWarcFileName
@@ -211,7 +219,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				}
 			}
 
-			recordsIDs := make([]RecordEvent, 0, len(recordBatch.Records))
+			recordsEvents := make([]RecordEvent, 0, len(recordBatch.Records))
 			// Write all the records of the record batch
 			for _, record := range recordBatch.Records {
 				warcWriter.Reset(warcFile)
@@ -223,11 +231,11 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				if err != nil {
 					panic(err)
 				}
-				recordsIDs = append(recordsIDs, RecordEvent{RecordInfo: record.RecordInfo, WARCFilename: strings.TrimSuffix(currentFileNameWithOpenExt, ".open")})
+				recordsEvents = append(recordsEvents, RecordEvent{RecordInfo: record.RecordInfo, WARCFilename: strings.TrimSuffix(currentFileNameWithOpenExt, ".open")})
 			}
 
 			if recordBatch.FeedbackChan != nil {
-				recordBatch.FeedbackChan <- recordsIDs
+				recordBatch.FeedbackChan <- recordsEvents
 				close(recordBatch.FeedbackChan)
 			}
 		} else {
@@ -248,6 +256,10 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 			err := os.Rename(fullPath, strings.TrimSuffix(fullPath, ".open"))
 			if err != nil {
 				panic(err)
+			}
+
+			if settings.WARCFilenameFeedbackChan != nil {
+				settings.WARCFilenameFeedbackChan <- strings.TrimSuffix(currentFileNameWithOpenExt, ".open")
 			}
 
 			done <- true
