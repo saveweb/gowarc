@@ -91,14 +91,7 @@ func NewWriter(writer io.Writer, fileName string, digestAlgorithm DigestAlgorith
 			}
 		}
 
-		// Create ZStandard writer either with or without the encoder dictionary and return it.
-		var zstdWriter *zstd.Encoder
-		var err error
-		eopts := []zstd.EOption{zstd.WithEncoderLevel(zstd.SpeedBetterCompression)}
-		if len(dictionary) > 0 {
-			eopts = append(eopts, zstd.WithEncoderDict(dictionary))
-		}
-		zstdWriter, err = zstd.NewWriter(writer, eopts...)
+		zstdWriter, err := newSizedZstdWriter(writer, dictionary)
 		if err != nil {
 			return nil, err
 		}
