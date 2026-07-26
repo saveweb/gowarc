@@ -45,10 +45,11 @@ func main() {
 	// Configure WARC settings
 	rotatorSettings := &warc.RotatorSettings{
 		WarcinfoContent: warc.Header{
-			"software": "My WARC writing client v1.0",
+			"hostname": "crawler.example.com",
+			"software": "My WARC writing client v1.0", // todo
 		},
 		Prefix:             "WEB",
-		Compression:        "gzip",
+		Compression:        "gzip", // todo
 		WARCWriterPoolSize: 4, // Records will be written to 4 WARC files in parallel, it helps maximize the disk IO on some hardware. To be noted, even if we have multiple WARC writers, WARCs are ALWAYS written by pair in the same file. (req/resp pair)
 	}
 
@@ -60,14 +61,14 @@ func main() {
 		DedupeOptions: warc.DedupeOptions{
 			LocalDedupe:   true,
 			CDXDedupe:     false,
-			SizeThreshold: 2048, // Only payloads above that threshold will be deduped
+			SizeThreshold: 1024, // Only payloads above that threshold will be deduped
 		},
 		DialTimeout:           10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		DNSResolutionTimeout:  5 * time.Second,
 		DNSRecordsTTL:         5 * time.Minute,
 		DNSCacheSize:          10000,
-		MaxReadBeforeTruncate: 1000000000,
+		MaxReadBeforeTruncate: 1000000000, // todo
 		DecompressBody:        true,
 		FollowRedirects:       true,
 		VerifyCerts:           true,

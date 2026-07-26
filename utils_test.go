@@ -6,7 +6,7 @@ import (
 
 // Tests for the NewRotatorSettings function
 func TestNewRotatorSettings(t *testing.T) {
-	rotatorSettings := NewRotatorSettings()
+	rotatorSettings := NewRotatorSettings("test.local")
 
 	if rotatorSettings.Prefix != "WARC" {
 		t.Error("Failed to set WARC rotator's filename prefix")

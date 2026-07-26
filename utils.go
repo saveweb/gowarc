@@ -137,9 +137,11 @@ func NewRecordBatch(feedbackChan chan FeedbackEvent) *RecordBatch {
 
 // NewRotatorSettings creates a RotatorSettings structure
 // and initialize it with default values
-func NewRotatorSettings() *RotatorSettings {
+func NewRotatorSettings(hostname string) *RotatorSettings {
+	warcinfoHeader := NewHeader()
+	warcinfoHeader.Set("hostname", hostname)
 	return &RotatorSettings{
-		WarcinfoContent:       NewHeader(),
+		WarcinfoContent:       warcinfoHeader,
 		Prefix:                "WARC",
 		WARCSize:              1000,
 		Compression:           CompressionGzip,
@@ -152,12 +154,6 @@ func NewRotatorSettings() *RotatorSettings {
 // checkRotatorSettings validate RotatorSettings settings, and set
 // default values if needed
 func checkRotatorSettings(settings *RotatorSettings) (err error) {
-	// Get host name as reported by the kernel
-	hostName, err := os.Hostname()
-	if err != nil {
-		panic(err)
-	}
-
 	// Check if output directory is specified, if not, set it to the current directory
 	if settings.OutputDirectory == "" {
 		settings.OutputDirectory = "./"
@@ -200,7 +196,11 @@ func checkRotatorSettings(settings *RotatorSettings) (err error) {
 	}
 
 	// Add few headers to the warcinfo payload, to not have it empty
-	settings.WarcinfoContent.Set("hostname", hostName)
+	if hostname := settings.WarcinfoContent.Get("hostname"); hostname != "" {
+		settings.WarcinfoContent.Set("hostname", hostname)
+	} else {
+		return fmt.Errorf("hostname not specified in warcinfo content")
+	}
 	settings.WarcinfoContent.Set("format", "WARC file version 1.1")
 	settings.WarcinfoContent.Set("conformsTo", "http://iipc.github.io/warc-specifications/specifications/warc-format/warc-1.1/")
 

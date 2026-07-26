@@ -6,7 +6,7 @@ import (
 
 // Tests for the Header methods and NewHeader
 func TestHeaderMethods(t *testing.T) {
-	rotatorSettings := NewRotatorSettings()
+	rotatorSettings := NewRotatorSettings("test-header.local")
 
 	rotatorSettings.WarcinfoContent.Set("test-header", "test-value")
 	val := rotatorSettings.WarcinfoContent.Get("test-header")

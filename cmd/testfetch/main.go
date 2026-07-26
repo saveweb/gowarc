@@ -33,7 +33,7 @@ func main() {
 	}
 	fmt.Printf("Output dir: %s\n", outDir)
 
-	rotatorSettings := warc.NewRotatorSettings()
+	rotatorSettings := warc.NewRotatorSettings("testfetch.local")
 	rotatorSettings.Prefix = "TESTFETCH"
 	rotatorSettings.OutputDirectory = outDir
 	rotatorSettings.Compression = warc.CompressionGzip

@@ -135,15 +135,15 @@ func (w *Writer) FlushAndCloseCompressor() (err error) {
 	}
 }
 
-func getNextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64) (nextWARCFilenameWithOpenExt string) {
-	nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial)
+func getNextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64, hostname string) (nextWARCFilenameWithOpenExt string) {
+	nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial, hostname)
 	_, err := os.Stat(path.Join(outputDir, nextWARCFilenameWithOpenExt))
 	for !errors.Is(err, os.ErrNotExist) {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			panic(err)
 		}
 
-		nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial)
+		nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial, hostname)
 		_, err = os.Stat(path.Join(outputDir, nextWARCFilenameWithOpenExt))
 	}
 
@@ -152,7 +152,7 @@ func getNextWARCFilename(outputDir, prefix string, compression compressionType, 
 
 func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done chan bool, serial *atomic.Uint64, dictionary []byte) {
 	var (
-		currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial)
+		currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial, settings.WarcinfoContent.Get("hostname"))
 		currentWarcinfoRecordID    string
 	)
 
@@ -200,7 +200,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 				}
 
 				// Create the new file and automatically increment the serial inside of GenerateWarcFileName
-				currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial)
+				currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial, settings.WarcinfoContent.Get("hostname"))
 				warcFile, err = os.Create(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt))
 				if err != nil {
 					panic(err)

@@ -35,7 +35,7 @@ type errorReadCloser struct {
 // Utility function used in all tests.
 func defaultRotatorSettings(t *testing.T) *RotatorSettings {
 	var (
-		rotatorSettings = NewRotatorSettings()
+		rotatorSettings = NewRotatorSettings("test.local")
 		err             error
 	)
 
@@ -51,7 +51,7 @@ func defaultRotatorSettings(t *testing.T) *RotatorSettings {
 
 func defaultBenchmarkRotatorSettings(t *testing.B) *RotatorSettings {
 	var (
-		rotatorSettings = NewRotatorSettings()
+		rotatorSettings = NewRotatorSettings("test.local")
 		err             error
 	)
 

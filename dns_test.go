@@ -202,7 +202,7 @@ func setupMock() (*customDialer, func()) {
 
 func setup(t *testing.T) (*customDialer, *CustomHTTPClient, func()) {
 	var (
-		rotatorSettings = NewRotatorSettings()
+		rotatorSettings = NewRotatorSettings("test.local")
 		err             error
 	)
 	rotatorSettings.OutputDirectory, err = os.MkdirTemp("", "warc-tests-")

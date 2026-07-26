@@ -11,7 +11,7 @@ import (
 func TestGenerateWARCFilename(t *testing.T) {
 	serial := &atomic.Uint64{}
 	serial.Store(5)
-	fname1 := generateWARCFilename("youtube", CompressionGzip, serial)
+	fname1 := generateWARCFilename("youtube", CompressionGzip, serial, "test.local")
 	if !strings.HasSuffix(fname1, ".warc.gz.open") {
 		t.Errorf("expected filename suffix: .warc.gz.open, got: %v", fname1)
 	}
@@ -72,7 +72,7 @@ func TestGenerateWARCFilename_NoRace(_ *testing.T) {
 			defer wg.Done()
 			<-start
 			for range iterations {
-				_ = generateWARCFilename(prefix, compression, &serial)
+				_ = generateWARCFilename(prefix, compression, &serial, "test.local")
 			}
 		}()
 	}

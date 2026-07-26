@@ -2,6 +2,7 @@ package warc
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -10,7 +11,7 @@ import (
 
 // generateWARCFilename generate a WARC file name following recommendations of the specs:
 // Prefix-Timestamp-Serial-Crawlhost.warc.gz.open
-func generateWARCFilename(prefix string, compression compressionType, serial *atomic.Uint64) (WARCFilenameWithOpenExt string) {
+func generateWARCFilename(prefix string, compression compressionType, serial *atomic.Uint64, hostname string) (WARCFilenameWithOpenExt string) {
 	var filename strings.Builder
 
 	filename.WriteString(prefix)
@@ -40,11 +41,11 @@ func generateWARCFilename(prefix string, compression compressionType, serial *at
 	filename.WriteString(formatSerial(newSerial, "5"))
 	filename.WriteString("-")
 
-	hostName, err := os.Hostname()
-	if err != nil {
-		panic(err)
+	filename.WriteString(hostname)
+
+	if hostname == "" {
+		log.Print("WARNING: hostname is empty")
 	}
-	filename.WriteString(hostName)
 
 	var fileExt string
 	switch compression {
