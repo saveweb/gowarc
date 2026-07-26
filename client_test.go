@@ -134,12 +134,7 @@ func (e *errorReadCloser) Read(p []byte) (int, error) {
 	if len(e.data) > 0 && e.readBefore > 0 {
 		// Read up to min(len(p), readBefore, len(data))
 		n := len(p)
-		if e.readBefore < n {
-			n = e.readBefore
-		}
-		if len(e.data) < n {
-			n = len(e.data)
-		}
+		n = min(e.readBefore, n, len(e.data))
 		copy(p, e.data[:n])
 		e.data = e.data[n:]
 		e.readBefore -= n
