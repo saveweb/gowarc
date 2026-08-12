@@ -89,6 +89,7 @@ func (p *connPool) get(host, scheme string) *pooledConn {
 		}
 		if isConnAlive(pc.conn) {
 			p.conns[key] = append(conns[:i], conns[i+1:]...)
+			p.activeConns++
 			return pc
 		}
 		pc.Close()
@@ -112,6 +113,13 @@ func (p *connPool) put(pc *pooledConn) {
 	pc.created = time.Now()
 	p.conns[key] = append(conns, pc)
 	p.activeConns--
+}
+
+func (p *connPool) discard(pc *pooledConn) {
+	_ = pc.Close()
+	p.mu.Lock()
+	p.activeConns--
+	p.mu.Unlock()
 }
 
 func (p *connPool) getOrCreate(ctx context.Context, host, scheme string) (*pooledConn, error) {

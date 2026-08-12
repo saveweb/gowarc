@@ -146,7 +146,8 @@ func (c *http11Client) Do(ctx context.Context, req *http.Request) (*http.Respons
 	pi := c.extractProtocolInfo(pc, scheme)
 
 	c.client.WaitGroup.Add(1)
-	go c.writeWARCFromConnection(ctx, reqTemp, respTemp, scheme, pc, keepAlive, resp, bodyDone, pi)
+	body := resp.Body.(*bodyCompletionReader)
+	go c.writeWARCFromConnection(ctx, reqTemp, respTemp, scheme, pc, keepAlive, resp, body, pi)
 
 	resp.Request = req
 	return resp, pi, nil
@@ -272,27 +273,45 @@ func (c *http11Client) readResponse(ctx context.Context, pc *pooledConn, req *ht
 		}
 	}
 
-	resp.Body = &bodyCompletionReader{inner: io.NopCloser(bodyReader), done: bodyDone}
+	resp.Body = &bodyCompletionReader{inner: io.NopCloser(bodyReader), done: bodyDone, conn: pc.conn}
 	return resp, nil
 }
 
 type bodyCompletionReader struct {
-	inner io.ReadCloser
-	done  chan struct{}
-	once  sync.Once
+	inner    io.ReadCloser
+	done     chan struct{}
+	conn     net.Conn
+	once     sync.Once
+	complete bool
+	mu       sync.Mutex
 }
 
 func (r *bodyCompletionReader) Read(p []byte) (int, error) {
 	n, err := r.inner.Read(p)
 	if err != nil {
+		r.mu.Lock()
+		r.complete = errors.Is(err, io.EOF)
+		r.mu.Unlock()
 		r.once.Do(func() { close(r.done) })
 	}
 	return n, err
 }
 
 func (r *bodyCompletionReader) Close() error {
+	r.mu.Lock()
+	complete := r.complete
+	r.mu.Unlock()
+	if !complete {
+		_ = r.conn.Close()
+	}
 	r.once.Do(func() { close(r.done) })
 	return r.inner.Close()
+}
+
+func (r *bodyCompletionReader) completed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.complete
 }
 
 func parseStatusLine(line string) (proto, status string, statusCode int, err error) {
@@ -336,16 +355,8 @@ func isChunked(transferEncoding []string) bool {
 	return false
 }
 
-func (c *http11Client) writeWARCFromConnection(ctx context.Context, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, scheme string, pc *pooledConn, keepAlive bool, resp *http.Response, bodyDone chan struct{}, pi *protocolInfo) {
+func (c *http11Client) writeWARCFromConnection(ctx context.Context, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, scheme string, pc *pooledConn, keepAlive bool, resp *http.Response, body *bodyCompletionReader, pi *protocolInfo) {
 	defer c.client.WaitGroup.Done()
-
-	select {
-	case <-bodyDone:
-	case <-ctx.Done():
-		pc.Close()
-		return
-	}
-
 	var feedbackChan chan FeedbackEvent
 	batchSent := false
 	if ctx.Value(ContextKeyFeedback) != nil {
@@ -359,6 +370,18 @@ func (c *http11Client) writeWARCFromConnection(ctx context.Context, reqTemp, res
 				close(feedbackChan)
 			}
 		}()
+	}
+	released := false
+	defer func() {
+		if !released {
+			c.pool.discard(pc)
+		}
+	}()
+
+	select {
+	case <-body.done:
+	case <-ctx.Done():
+		return
 	}
 
 	var (
@@ -522,10 +545,9 @@ func (c *http11Client) writeWARCFromConnection(ctx context.Context, reqTemp, res
 		return
 	}
 
-	if keepAlive {
+	if keepAlive && body.completed() {
 		c.pool.put(pc)
-	} else {
-		pc.Close()
+		released = true
 	}
 }
 

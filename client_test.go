@@ -456,6 +456,59 @@ func TestHTTPClientWithFeedbackChan(t *testing.T) {
 	}
 }
 
+func TestHTTP11ResponseBodyCloseInterruptsConnection(t *testing.T) {
+	disconnected := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000000")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(disconnected)
+	}))
+	defer server.Close()
+
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: defaultRotatorSettings(t), EnableKeepAlive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range httpClient.ErrChan {
+		}
+	}()
+
+	feedback := make(chan FeedbackEvent, 1)
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req = req.WithContext(WithFeedbackChannel(req.Context(), feedback))
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("server connection remained open after response body close")
+	}
+	select {
+	case <-feedback:
+	case <-time.After(time.Second):
+		t.Fatal("feedback did not finish after response body close")
+	}
+	stats := httpClient.GetConnPoolStats()
+	if stats.ActiveConns != 0 || stats.IdleConns != 0 {
+		t.Fatalf("connection pool after response body close = %+v", stats)
+	}
+	if err := httpClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHTTPClientTLSHandshakeTimeout(t *testing.T) {
 	var (
 		rotatorSettings = defaultRotatorSettings(t)
