@@ -1411,7 +1411,7 @@ func TestWARCWritingWithDisallowedCertificate(t *testing.T) {
 	defer server.Close()
 
 	// init the HTTP client responsible for recording HTTP(s) requests / responses
-	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings, InsecureSkipVerifyCerts: true})
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: rotatorSettings})
 	if err != nil {
 		t.Fatalf("Unable to init WARC writing HTTP client: %s", err)
 	}
@@ -1423,14 +1423,13 @@ func TestWARCWritingWithDisallowedCertificate(t *testing.T) {
 	}
 
 	resp, err := httpClient.Do(req)
-	if err != nil {
-		// There are multiple different strings for x509 running into an invalid certificate and changes per OS.
-		if !strings.Contains(err.Error(), "x509: certificate") {
-			t.Fatal(err)
-		}
-	} else {
-		defer resp.Body.Close()
-		io.Copy(io.Discard, resp.Body)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("expected certificate verification to fail")
+	}
+	// There are multiple different strings for x509 running into an invalid certificate and changes per OS.
+	if !strings.Contains(err.Error(), "x509: certificate") {
+		t.Fatal(err)
 	}
 
 	httpClient.Close()
