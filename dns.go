@@ -171,6 +171,9 @@ func (d *customDialer) concurrentDNSLookup(ctx context.Context, address string, 
 	// Collect results with early termination
 	var ipv4Errors, ipv6Errors []error
 	for res := range resultChan {
+		if haveAllResults() {
+			continue
+		}
 		if res.err == nil {
 			if res.recordType == dns.TypeA && ipv4 == nil {
 				ipv4 = res.ip
@@ -181,12 +184,6 @@ func (d *customDialer) concurrentDNSLookup(ctx context.Context, address string, 
 			// Early termination: if we have all results, cancel workers
 			if haveAllResults() {
 				cancel()
-				// Drain remaining results to prevent worker blocking
-				go func() {
-					for range resultChan {
-					}
-				}()
-				break
 			}
 		} else {
 			if res.recordType == dns.TypeA {

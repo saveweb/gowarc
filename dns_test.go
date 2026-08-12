@@ -40,6 +40,27 @@ type mockDNSResponse struct {
 	err  error
 }
 
+type cancellationIgnoringDNSClient struct {
+	slowServer string
+	delay      time.Duration
+}
+
+func (c cancellationIgnoringDNSClient) ExchangeContext(_ context.Context, msg *dns.Msg, address string) (*dns.Msg, time.Duration, error) {
+	if address == c.slowServer {
+		time.Sleep(c.delay)
+	}
+	r := new(dns.Msg)
+	r.SetReply(msg)
+	question := msg.Question[0]
+	switch question.Qtype {
+	case dns.TypeA:
+		r.Answer = append(r.Answer, &dns.A{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET}, A: net.ParseIP("192.0.2.1")})
+	case dns.TypeAAAA:
+		r.Answer = append(r.Answer, &dns.AAAA{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET}, AAAA: net.ParseIP("2001:db8::1")})
+	}
+	return r, 0, nil
+}
+
 func newMockDNSClient() *mockDNSClient {
 	return &mockDNSClient{
 		responses: make(map[string]mockDNSResponse),
@@ -615,6 +636,35 @@ func TestDNSEarlyCancellation(t *testing.T) {
 
 	callLog := mock.getCallLog()
 	t.Logf("Call log: %v", callLog)
+}
+
+func TestDNSEarlyCancellationWaitsForWorkers(t *testing.T) {
+	d := newTestCustomDialer()
+	d.dnsConcurrency = 2
+	d.DNSConfig.Servers = []string{"1.1.1.1", "2.2.2.2"}
+	d.DNSClient = cancellationIgnoringDNSClient{slowServer: "2.2.2.2:53", delay: 100 * time.Millisecond}
+	d.client = &CustomHTTPClient{WARCWriter: make(chan *RecordBatch)}
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for batch := range d.client.WARCWriter {
+			batch.FeedbackChan <- FeedbackEvent{}
+		}
+	}()
+
+	start := time.Now()
+	_, _, _, err := d.archiveDNS(context.Background(), target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed < 75*time.Millisecond {
+		t.Fatalf("archiveDNS returned after %v while a DNS worker was still running", elapsed)
+	}
+
+	close(d.client.WARCWriter)
+	<-drained
+	d.DNSRecords.Close()
 }
 
 // TestDNSIPv4Only tests IPv6-disabled mode
