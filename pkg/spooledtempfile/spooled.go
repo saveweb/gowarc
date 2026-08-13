@@ -33,6 +33,7 @@ type spooledTempFile struct {
 type ReadWriteSeekCloser interface {
 	ReadSeekCloser
 	io.Writer
+	Truncate(size int64) error
 }
 
 // NewSpooledTempFile returns an ReadWriteSeekCloser,
@@ -106,6 +107,16 @@ func (s *spooledTempFile) Write(p []byte) (n int, err error) {
 	}
 
 	return s.file.Write(p)
+}
+
+func (s *spooledTempFile) Truncate(size int64) error {
+	if s.closed {
+		return io.ErrClosedPipe
+	}
+	if s.reading {
+		return errors.New("spooledtempfile: truncate after read")
+	}
+	return s.file.Truncate(size)
 }
 
 func (s *spooledTempFile) Close() error {

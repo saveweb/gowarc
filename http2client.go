@@ -1,41 +1,38 @@
 package warc
 
 import (
-	"bytes"
-	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	http "github.com/saveweb/fhttp"
-	"github.com/saveweb/fhttp/httputil"
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	tls_client "github.com/saveweb/tls-client"
-	"golang.org/x/sync/errgroup"
-
-	gzip "github.com/klauspost/compress/gzip"
-	"github.com/klauspost/compress/zstd"
 )
 
 type http2Client struct {
 	client    *CustomHTTPClient
 	tlsClient tls_client.HttpClient
-	enableH3  bool
+	dialer    *customDialer
 }
 
-func newHTTP2Client(client *CustomHTTPClient, enableH3 bool, forceH3 bool) (*http2Client, error) {
+func newHTTP2Client(client *CustomHTTPClient, enableH3 bool, forceH3 bool, forceH1 bool) (*http2Client, error) {
+	c := &http2Client{client: client}
+	factory := &transportCaptureFactory{owner: c}
 	opts := []tls_client.HttpClientOption{
 		tls_client.WithClientProfile(client.tlsProfile.clientProfile),
-		tls_client.WithRandomTLSExtensionOrder(),
-		tls_client.WithNotFollowRedirects(),
-		tls_client.WithTimeoutSeconds(30),
+		tls_client.WithTimeoutMilliseconds(0),
+	}
+	if client.randomTLSExtensionOrder {
+		opts = append(opts, tls_client.WithRandomTLSExtensionOrder())
+	}
+	if !client.followRedirects {
+		opts = append(opts, tls_client.WithNotFollowRedirects())
 	}
 
 	if client.insecureSkipVerifyCerts {
@@ -44,20 +41,38 @@ func newHTTP2Client(client *CustomHTTPClient, enableH3 bool, forceH3 bool) (*htt
 
 	if forceH3 {
 		opts = append(opts, tls_client.WithForceH3())
+	} else if forceH1 {
+		opts = append(opts, tls_client.WithForceHttp1())
 	} else if !enableH3 {
 		opts = append(opts, tls_client.WithDisableHttp3())
 	}
 
 	to := &tls_client.TransportOptions{
-		MaxIdleConns:        client.keepAliveMaxIdle,
-		MaxIdleConnsPerHost: client.keepAliveMaxIdle,
-		DisableCompression:  true,
+		MaxIdleConns:          client.keepAliveMaxIdle,
+		MaxIdleConnsPerHost:   client.keepAliveMaxIdlePerHost,
+		DisableKeepAlives:     client.disableKeepAlives,
+		DisableCompression:    true,
+		CaptureFactory:        factory,
+		ResponseHeaderTimeout: client.ResponseHeaderTimeout,
+		TLSHandshakeTimeout:   client.TLSHandshakeTimeout,
 	}
 	if client.keepAliveIdleTimeout > 0 {
 		idle := client.keepAliveIdleTimeout
 		to.IdleConnTimeout = &idle
 	}
 	opts = append(opts, tls_client.WithTransportOptions(to))
+
+	var err error
+	c.dialer, err = newCustomDialer(client, client.dialTimeout, client.dnsRecordsTTL, client.dnsResolutionTimeout,
+		client.dnsCacheSize, client.dnsServers, client.dnsFallback, client.dnsConcurrency,
+		client.disableIPv4, client.disableIPv6)
+	if err != nil {
+		return nil, fmt.Errorf("http2client: creating dialer: %w", err)
+	}
+	to.ResolveUDPAddr = c.dialer.resolveUDPAddr
+	if !forceH3 {
+		opts = append(opts, tls_client.WithDialContext(c.dialer.dialNew))
+	}
 
 	if client.disableIPv4 {
 		opts = append(opts, tls_client.WithDisableIPV4())
@@ -68,371 +83,141 @@ func newHTTP2Client(client *CustomHTTPClient, enableH3 bool, forceH3 bool) (*htt
 
 	tc, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)
 	if err != nil {
+		c.dialer.close()
 		return nil, fmt.Errorf("http2client: creating tls-client: %w", err)
 	}
 
-	return &http2Client{
-		client:    client,
-		tlsClient: tc,
-		enableH3:  enableH3,
-	}, nil
+	c.tlsClient = tc
+	return c, nil
 }
 
-func (c *http2Client) Close() {
+func (c *http2Client) CloseIdleConnections() {
 	c.tlsClient.CloseIdleConnections()
 }
 
-type h2BodyWrapper struct {
-	inner      io.Reader
-	warcWriter io.Writer
-	done       chan struct{}
-	once       sync.Once
-	n          int64
+func (c *http2Client) Shutdown() {
+	c.CloseIdleConnections()
+	if c.dialer != nil {
+		c.dialer.close()
+	}
 }
 
-func (r *h2BodyWrapper) Read(p []byte) (int, error) {
-	n, err := r.inner.Read(p)
-	if n > 0 {
-		r.n += int64(n)
-		if r.warcWriter != nil {
-			r.warcWriter.Write(p[:n])
-		}
-	}
-	if err != nil {
-		r.once.Do(func() { close(r.done) })
-	}
-	return n, err
-}
-
-func (c *http2Client) Do(ctx context.Context, req *http.Request) (*http.Response, *protocolInfo, error) {
-	scheme := "https"
-	if req.URL != nil && req.URL.Scheme == "http" {
-		scheme = "http"
-	}
-
+func (c *http2Client) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
 	if req.Header.Get("User-Agent") == "" && c.client.defaultUserAgent != "" {
 		req.Header.Set("User-Agent", c.client.defaultUserAgent)
 	}
-
-	reqTemp, err := spooledtempfile.NewSpooledTempFile("warc-req", c.client.TempDir)
+	resp, err := c.tlsClient.Do(req.WithContext(ctx))
+	state := exchangeStateFromContext(ctx)
+	if state == nil {
+		return nil, errors.New("warc: request has no exchange state")
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("http2client: creating req temp file: %w", err)
+		state.finishNetwork(err)
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
+		}
+		return nil, fmt.Errorf("http2client: doing request: %w", err)
 	}
-	respTemp, err := spooledtempfile.NewSpooledTempFile("warc-resp", c.client.TempDir)
+	if err := wrapArchiveResponseBody(c.client, resp); err != nil {
+		_ = resp.Body.Close()
+		state.finishNetwork(err)
+		return nil, fmt.Errorf("http2client: wrapping response body: %w", err)
+	}
+	state.finishNetwork(nil)
+
+	return resp, nil
+}
+
+func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, pi *protocolInfo, captureResult http.CaptureAttemptResult) (FeedbackEvent, error) {
+	requestRecord, target, err := buildRequestRecord(ctx, scheme, c.client, reqTemp)
 	if err != nil {
-		reqTemp.Close()
-		return nil, nil, fmt.Errorf("http2client: creating resp temp file: %w", err)
+		_ = respTemp.Close()
+		return nil, err
 	}
-
-	reqBytes, err := httputil.DumpRequestOut(req, req.Body != nil && req.ContentLength > 0)
+	responseRecord, err := buildResponseRecord(ctx, c.client, respTemp, target, captureResult.Outcome == http.CaptureOutcomeTruncated)
 	if err != nil {
-		reqTemp.Close()
-		respTemp.Close()
-		return nil, nil, fmt.Errorf("http2client: dumping request: %w", err)
-	}
-	reqTemp.Write(reqBytes)
-
-	if req.Body != nil && req.GetBody != nil {
-		body, berr := req.GetBody()
-		if berr == nil && body != nil {
-			req.Body = body
+		_ = requestRecord.Content.Close()
+		if errors.Is(err, errDiscarded) {
+			return nil, nil
 		}
+		return nil, err
 	}
 
-	bodyDone := make(chan struct{})
-
-	resp, err := c.tlsClient.Do(req)
-	if err != nil {
-		reqTemp.Close()
-		respTemp.Close()
-		return nil, nil, fmt.Errorf("http2client: doing request: %w", err)
+	requestRecordID := uuid.NewString()
+	responseRecordID := uuid.NewString()
+	requestRecord.Header.Set("WARC-Record-ID", "<urn:uuid:"+requestRecordID+">")
+	requestRecord.Header.Set("WARC-Concurrent-To", "<urn:uuid:"+responseRecordID+">")
+	responseRecord.Header.Set("WARC-Record-ID", "<urn:uuid:"+responseRecordID+">")
+	responseRecord.Header.Set("WARC-Concurrent-To", "<urn:uuid:"+requestRecordID+">")
+	if captureResult.Outcome == http.CaptureOutcomeTruncated {
+		responseRecord.Header.Set("WARC-Truncated", "disconnect")
 	}
 
-	statusText := resp.Status
-	if idx := strings.IndexByte(statusText, ' '); idx >= 0 {
-		statusText = statusText[idx+1:]
-	}
-	statusLine := fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, statusText)
-	io.WriteString(respTemp, statusLine)
-
-	var headerBuf bytes.Buffer
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			headerBuf.WriteString(k)
-			headerBuf.WriteString(": ")
-			headerBuf.WriteString(v)
-			headerBuf.WriteString("\r\n")
+	batch := NewRecordBatch(nil)
+	batch.Records = []*Record{requestRecord, responseRecord}
+	responseSize := responseRecord.Content.Len()
+	closeRecords := true
+	defer func() {
+		if closeRecords {
+			_ = responseRecord.Content.Close()
+			_ = requestRecord.Content.Close()
 		}
-	}
-	headerBuf.WriteString("\r\n")
-	respTemp.Write(headerBuf.Bytes())
+	}()
 
-	bodyWrapper := &h2BodyWrapper{
-		inner:      resp.Body,
-		warcWriter: respTemp,
-		done:       bodyDone,
-	}
-
-	var bodyReader io.Reader = bodyWrapper
-
-	if c.client.DecompressBody {
-		switch strings.ToLower(resp.Header.Get("Content-Encoding")) {
-		case "gzip":
-			gzReader, gerr := gzip.NewReader(bodyReader)
-			if gerr != nil {
-				return nil, nil, fmt.Errorf("creating gzip reader: %w", gerr)
-			}
-			bodyReader = gzReader
-		case "deflate":
-			zlibReader, zerr := zlib.NewReader(bodyReader)
-			if zerr != nil {
-				return nil, nil, fmt.Errorf("creating deflate reader: %w", zerr)
-			}
-			bodyReader = zlibReader
-		case "zstd":
-			zstdReader, serr := zstd.NewReader(bodyReader)
-			if serr != nil {
-				return nil, nil, fmt.Errorf("creating zstd reader: %w", serr)
-			}
-			bodyReader = zstdReader.IOReadCloser()
-		}
-	}
-
-	resp.Body = &h2ReadCloser{reader: bodyReader, bodyWrapper: bodyWrapper}
-
-	proto := "h2"
-	if resp.Proto == "HTTP/3.0" || resp.Proto == "HTTP/3" {
-		proto = "h3"
-	}
-	pi := c.extractProtocolInfo(req.URL.Host, proto)
-
-	c.client.WaitGroup.Add(1)
-	go c.writeWARCFromConnection(ctx, scheme, reqTemp, respTemp, resp, bodyDone, pi)
-
-	return resp, pi, nil
-}
-
-type h2ReadCloser struct {
-	reader      io.Reader
-	bodyWrapper *h2BodyWrapper
-}
-
-func (r *h2ReadCloser) Read(p []byte) (int, error) {
-	return r.reader.Read(p)
-}
-
-func (r *h2ReadCloser) Close() error {
-	r.bodyWrapper.once.Do(func() { close(r.bodyWrapper.done) })
-	return nil
-}
-
-func (c *http2Client) extractProtocolInfo(host string, proto string) *protocolInfo {
-	pi := &protocolInfo{
-		Protocol: proto,
-	}
-
-	addr := host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		addr = h
-	}
-
-	connInfo := c.tlsClient.GetConnectionInfo(host)
-	if connInfo == nil {
-		if _, p, err := net.SplitHostPort(host); err == nil {
-			connInfo = c.tlsClient.GetConnectionInfo(net.JoinHostPort(addr, p))
-		}
-	}
-	if connInfo == nil {
-		connInfo = c.tlsClient.GetConnectionInfo(net.JoinHostPort(addr, "443"))
-	}
-	if connInfo == nil {
-		connInfo = c.tlsClient.GetConnectionInfo(net.JoinHostPort(addr, "80"))
-	}
-
-	if connInfo != nil {
-		pi.TLSVersion = connInfo.TLSVersion
-		pi.CipherSuite = connInfo.CipherSuite
-		if connInfo.NegotiatedProtocol != "" {
-			pi.Protocol = connInfo.NegotiatedProtocol
-		}
-	}
-
-	return pi
-}
-
-func (c *http2Client) writeWARCFromConnection(ctx context.Context, scheme string, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, resp *http.Response, bodyDone chan struct{}, pi *protocolInfo) {
-	defer c.client.WaitGroup.Done()
-
-	select {
-	case <-bodyDone:
-	case <-ctx.Done():
-		return
-	}
-
-	var feedbackChan chan FeedbackEvent
-	batchSent := false
-	if ctx.Value(ContextKeyFeedback) != nil {
-		var ok bool
-		feedbackChan, ok = ctx.Value(ContextKeyFeedback).(chan FeedbackEvent)
-		if !ok {
-			panic("feedback channel is not of type chan FeedbackEvent")
-		}
-		defer func() {
-			if !batchSent {
-				close(feedbackChan)
-			}
-		}()
-	}
-
-	var (
-		batch           = NewRecordBatch(feedbackChan)
-		recordChan      = make(chan *Record, 2)
-		recordIDs       []string
-		errs            = errgroup.Group{}
-		targetURIReqCh  = make(chan string, 1)
-		targetURIRespCh = make(chan string, 1)
-	)
-
-	errs.Go(func() error {
-		return readRequestFromTempShared(ctx, scheme, c.client, reqTemp, targetURIReqCh, recordChan)
-	})
-
-	errs.Go(func() error {
-		return readResponseFromTempShared(ctx, c.client, respTemp, targetURIReqCh, targetURIRespCh, recordChan)
-	})
-
-	readErr := errs.Wait()
-	close(recordChan)
-
-	if readErr != nil {
-		if errors.Is(readErr, errDiscarded) {
-			for record := range recordChan {
-				record.Content.Close()
-			}
-			return
-		}
-
-		c.client.ErrChan <- &Error{
-			Err:  readErr,
-			Func: "http2client.writeWARCFromConnection",
-		}
-
-		for record := range recordChan {
-			record.Content.Close()
-		}
-		return
-	}
-
-	for record := range recordChan {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			recordIDs = append(recordIDs, uuid.NewString())
-			batch.Records = append(batch.Records, record)
-		}
-	}
-
-	if len(batch.Records) != 2 {
-		c.client.ErrChan <- &Error{
-			Err:  fmt.Errorf("warc: expected 2 records, got %d", len(batch.Records)),
-			Func: "http2client.writeWARCFromConnection",
-		}
-		for _, record := range batch.Records {
-			record.Content.Close()
-		}
-		return
-	}
-
-	if batch.Records[0].Header.Get("WARC-Type") != "response" {
-		slicesReverse(batch.Records)
-	}
-
-	var warcTargetURI string
-	select {
-	case recv, ok := <-targetURIRespCh:
-		if !ok {
-			c.client.ErrChan <- &Error{
-				Err:  fmt.Errorf("target URI channel closed"),
-				Func: "http2client.writeWARCFromConnection",
-			}
-			return
-		}
-		warcTargetURI = recv
-	case <-ctx.Done():
-		return
-	}
-
-	for i, r := range batch.Records {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if pi.RemoteAddr != nil {
-				switch addr := pi.RemoteAddr.(type) {
-				case *net.TCPAddr:
-					r.Header.Set("WARC-IP-Address", addr.IP.String())
-				case *net.UDPAddr:
-					r.Header.Set("WARC-IP-Address", addr.IP.String())
-				}
-			}
-
-			r.Header.Add("WARC-Protocol", pi.ProtocolWARCValue())
-			if tlsVal := pi.TLSVersionWARCValue(); tlsVal != "" {
-				r.Header.Add("WARC-Protocol", tlsVal)
-			}
-			if pi.CipherSuite != 0 {
-				r.Header.Set("WARC-Cipher-Suite", tlsCipherSuiteName(pi.CipherSuite))
-			}
-
-			r.Header.Set("WARC-Record-ID", "<urn:uuid:"+recordIDs[i]+">")
-
-			if i == len(recordIDs)-1 {
-				r.Header.Set("WARC-Concurrent-To", "<urn:uuid:"+recordIDs[0]+">")
-			} else {
-				r.Header.Set("WARC-Concurrent-To", "<urn:uuid:"+recordIDs[1]+">")
-			}
-
-			r.Header.Set("WARC-Target-URI", warcTargetURI)
-
-			if _, seekErr := r.Content.Seek(0, 0); seekErr != nil {
-				c.client.ErrChan <- &Error{Err: seekErr, Func: "http2client.writeWARCFromConnection"}
-				return
-			}
-
-			digest, err := GetDigest(r.Content, c.client.DigestAlgorithm)
-			if err != nil {
-				c.client.ErrChan <- &Error{Err: err, Func: "http2client.writeWARCFromConnection"}
-				return
-			}
-
-			r.Header.Set("WARC-Block-Digest", digest)
-			r.Header.Set("Content-Length", strconv.FormatInt(getContentLength(r.Content), 10))
-
-			if c.client.dedupeOptions.LocalDedupe {
-				if r.Header.Get("WARC-Type") == "response" && !slicesContains(emptyPayloadDigests, r.Header.Get("WARC-Payload-Digest")) {
-					captureTime, timeConversionErr := time.Parse(time.RFC3339, batch.CaptureTime)
-					if timeConversionErr != nil {
-						c.client.ErrChan <- &Error{Err: timeConversionErr, Func: "http2client.writeWARCFromConnection.timeConversionErr"}
-						return
-					}
-					c.client.dedupeHashTable.Set(r.Header.Get("WARC-Payload-Digest"), revisitRecord{
-						responseUUID: recordIDs[i],
-						size:         getContentLength(r.Content),
-						targetURI:    warcTargetURI,
-						date:         captureTime,
-					})
-				}
+	// IIPC defines the request IP as the destination and the response IP as the
+	// source. For one direct exchange both are the same transport peer.
+	for _, record := range batch.Records {
+		if pi.RemoteAddr != nil {
+			switch addr := pi.RemoteAddr.(type) {
+			case *net.TCPAddr:
+				record.Header.Set("WARC-IP-Address", addr.IP.String())
+			case *net.UDPAddr:
+				record.Header.Set("WARC-IP-Address", addr.IP.String())
 			}
 		}
+		if pi.CipherSuite != 0 {
+			record.Header.Set("WARC-Cipher-Suite", tlsCipherSuiteName(pi.CipherSuite))
+		}
+		record.Header.Set("WARC-Target-URI", target)
+		if _, err := record.Content.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		digest, err := GetDigest(record.Content, c.client.DigestAlgorithm)
+		if err != nil {
+			return nil, err
+		}
+		size := record.Content.Len()
+		if size < 0 {
+			return nil, errors.New("warc: cannot stat captured record")
+		}
+		record.Header.Set("WARC-Block-Digest", digest)
+		record.Header.Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 
 	select {
 	case c.client.WARCWriter <- batch:
-		batchSent = true
+		closeRecords = false
 	case <-ctx.Done():
-		return
+		return nil, context.Cause(ctx)
 	}
+	writeResult, err := batch.Wait(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if c.client.dedupeOptions.LocalDedupe && responseRecord.Header.Get("WARC-Type") == "response" &&
+		!slicesContains(emptyPayloadDigests, responseRecord.Header.Get("WARC-Payload-Digest")) {
+		captureTime, err := time.Parse(time.RFC3339Nano, batch.CaptureTime)
+		if err != nil {
+			return writeResult.Events, err
+		}
+		c.client.dedupeHashTable.Set(responseRecord.Header.Get("WARC-Payload-Digest"), revisitRecord{
+			responseUUID: responseRecordID,
+			size:         responseSize,
+			targetURI:    target,
+			date:         captureTime,
+		})
+	}
+	return writeResult.Events, nil
 }
 
 var _ = (protocolClient)((*http2Client)(nil))

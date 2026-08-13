@@ -467,7 +467,7 @@ func TestHTTP11ResponseBodyCloseInterruptsConnection(t *testing.T) {
 	}))
 	defer server.Close()
 
-	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: defaultRotatorSettings(t), EnableKeepAlive: true})
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: defaultRotatorSettings(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,9 +500,72 @@ func TestHTTP11ResponseBodyCloseInterruptsConnection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("feedback did not finish after response body close")
 	}
-	stats := httpClient.GetConnPoolStats()
-	if stats.ActiveConns != 0 || stats.IdleConns != 0 {
-		t.Fatalf("connection pool after response body close = %+v", stats)
+	if err := httpClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTP11ContextCancellationInterruptsResponseHeaders(t *testing.T) {
+	disconnected := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		close(disconnected)
+	}))
+	defer server.Close()
+
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: defaultRotatorSettings(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range httpClient.ErrChan {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := httpClient.Do(req); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Do error = %v, want context deadline exceeded", err)
+	}
+
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("server connection remained open after context cancellation")
+	}
+	if err := httpClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTP11ResponseHeaderTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	httpClient, err := NewWARCWritingHTTPClient(HTTPClientSettings{
+		RotatorSettings:       defaultRotatorSettings(t),
+		ResponseHeaderTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range httpClient.ErrChan {
+		}
+	}()
+
+	start := time.Now()
+	if _, err := httpClient.Get(server.URL); err == nil {
+		t.Fatal("expected response header timeout")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("response header timeout took %s", elapsed)
 	}
 	if err := httpClient.Close(); err != nil {
 		t.Fatal(err)
@@ -873,13 +936,13 @@ func TestHTTPClientLocalDedupe(t *testing.T) {
 	}
 
 	// verify that the local dedupe count is correct
-	if LocalDedupeTotalBytes.Load() != 26872 {
-		t.Fatalf("local dedupe total bytes mismatch, expected: 26872 got: %d", LocalDedupeTotalBytes.Load())
+	if LocalDedupeTotalBytes.Load() != 26853 {
+		t.Fatalf("local dedupe total bytes mismatch, expected: 26853 got: %d", LocalDedupeTotalBytes.Load())
 	}
 
 	// Ensure that HTTP client results work correctly as well
-	if httpClient.LocalDedupeTotalBytes.Load() != 26872 {
-		t.Fatalf("local dedupe total bytes mismatch, expected: 26872 got: %d", httpClient.LocalDedupeTotalBytes.Load())
+	if httpClient.LocalDedupeTotalBytes.Load() != 26853 {
+		t.Fatalf("local dedupe total bytes mismatch, expected: 26853 got: %d", httpClient.LocalDedupeTotalBytes.Load())
 	}
 
 	// 1 is expected due to requiring one request to enter into the table.
@@ -967,13 +1030,13 @@ func TestHTTPClientRemoteDedupe(t *testing.T) {
 	}
 
 	// verify that the remote dedupe count is correct
-	if CDXDedupeTotalBytes.Load() != 107488 {
-		t.Fatalf("remote dedupe total bytes mismatch, expected: 107488 got: %d", CDXDedupeTotalBytes.Load())
+	if CDXDedupeTotalBytes.Load() != 107412 {
+		t.Fatalf("remote dedupe total bytes mismatch, expected: 107412 got: %d", CDXDedupeTotalBytes.Load())
 	}
 
 	// Ensure that HTTP client results work correctly as well
-	if httpClient.CDXDedupeTotalBytes.Load() != 107488 {
-		t.Fatalf("remote dedupe total bytes mismatch, expected: 107488 got: %d", httpClient.CDXDedupeTotalBytes.Load())
+	if httpClient.CDXDedupeTotalBytes.Load() != 107412 {
+		t.Fatalf("remote dedupe total bytes mismatch, expected: 107412 got: %d", httpClient.CDXDedupeTotalBytes.Load())
 	}
 
 	if httpClient.CDXDedupeTotal.Load() != 4 {
@@ -1066,13 +1129,13 @@ func TestHTTPClientDoppelgangerDedupe(t *testing.T) {
 	}
 
 	// verify that the remote dedupe count is correct
-	if DoppelgangerDedupeTotalBytes.Load() != 107488 {
-		t.Fatalf("remote dedupe total bytes mismatch, expected: 107488 got: %d", DoppelgangerDedupeTotalBytes.Load())
+	if DoppelgangerDedupeTotalBytes.Load() != 107412 {
+		t.Fatalf("remote dedupe total bytes mismatch, expected: 107412 got: %d", DoppelgangerDedupeTotalBytes.Load())
 	}
 
 	// Ensure that HTTP client results work correctly as well
-	if httpClient.DoppelgangerDedupeTotalBytes.Load() != 107488 {
-		t.Fatalf("remote dedupe total bytes mismatch, expected: 107488 got: %d", httpClient.DoppelgangerDedupeTotalBytes.Load())
+	if httpClient.DoppelgangerDedupeTotalBytes.Load() != 107412 {
+		t.Fatalf("remote dedupe total bytes mismatch, expected: 107412 got: %d", httpClient.DoppelgangerDedupeTotalBytes.Load())
 	}
 
 	if httpClient.DoppelgangerDedupeTotal.Load() != 4 {
@@ -1453,8 +1516,7 @@ func TestHTTPClientWithoutIoCopy(t *testing.T) {
 		err             error
 	)
 
-	// This test is intended to not output any WARC files.
-	// The intent is to ensure that invalid handling of responses generates a "SHA1 error".
+	// Closing without reading triggers the default bounded drain and still archives the response.
 
 	// init test HTTP endpoint
 	server := newTestImageServer(t, http.StatusOK)
@@ -1487,7 +1549,7 @@ func TestHTTPClientWithoutIoCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Close the response body before copying body to io.Discard. This causes SHA1 errors!!!!
+	// Close the response body without copying it in the caller.
 	resp.Body.Close()
 
 	httpClient.Close()
@@ -1498,8 +1560,7 @@ func TestHTTPClientWithoutIoCopy(t *testing.T) {
 	}
 
 	for _, path := range files {
-		// Check for an empty file. This is fine and expected! If we aren't copying to io.Discard correctly, it should run into an error above.
-		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", []string{""}, 0, server.URL+"/")
+		testFileSingleHashCheck(t, path, "sha1:UIRWL5DFIPQ4MX3D3GFHM2HCVU3TZ6I3", nil, 1, server.URL+"/")
 	}
 }
 

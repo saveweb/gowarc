@@ -4,30 +4,26 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/maypok86/otter"
 	"github.com/miekg/dns"
+	"golang.org/x/sync/singleflight"
 )
 
 type contextKey string
 
 const (
-	ContextKeyFeedback    contextKey = "feedback"
-	ContextKeyWrappedConn contextKey = "wrappedConn"
-	ContextKeySave        contextKey = "save"
+	ContextKeyFeedback contextKey = "feedback"
+	ContextKeySave     contextKey = "save"
 )
 
 func WithFeedbackChannel(ctx context.Context, feedbackChan chan FeedbackEvent) context.Context {
 	return context.WithValue(ctx, ContextKeyFeedback, feedbackChan)
-}
-
-func WithWrappedConnection(ctx context.Context, wrappedConnChan chan *CustomConnection) context.Context {
-	return context.WithValue(ctx, ContextKeyWrappedConn, wrappedConnChan)
 }
 
 func WithSaveChannel(ctx context.Context, ch chan bool) context.Context {
@@ -45,12 +41,83 @@ type customDialer struct {
 	DNSConfig  *dns.ClientConfig
 	DNSClient  dnsExchanger
 	DNSRecords *otter.Cache[string, dnsResult]
-	tlsProfile *TLSProfile
 	net.Dialer
 	disableIPv4        bool
 	disableIPv6        bool
 	dnsConcurrency     int
 	dnsRoundRobinIndex atomic.Uint32
+	dnsGroup           singleflight.Group
+	lookupCtx          context.Context
+	lookupCancel       context.CancelFunc
+	lookupMu           sync.Mutex
+	lookupWG           sync.WaitGroup
+	lookupClosing      bool
+}
+
+func (d *customDialer) beginLookup() bool {
+	d.lookupMu.Lock()
+	defer d.lookupMu.Unlock()
+	if d.lookupClosing {
+		return false
+	}
+	if d.lookupCtx == nil {
+		d.lookupCtx, d.lookupCancel = context.WithCancel(context.WithValue(context.Background(), writerOwnerContextKey{}, true))
+	}
+	d.lookupWG.Add(1)
+	return true
+}
+
+func (d *customDialer) close() {
+	d.lookupMu.Lock()
+	if !d.lookupClosing {
+		d.lookupClosing = true
+		if d.lookupCancel != nil {
+			d.lookupCancel()
+		}
+	}
+	d.lookupMu.Unlock()
+	d.lookupWG.Wait()
+	d.DNSRecords.Close()
+	// otter v1.2.4 exposes no join primitive for its one-second TTL cleanup
+	// loop. Keep resolver shutdown synchronous until the dependency does.
+	time.Sleep(1100 * time.Millisecond)
+}
+
+func (d *customDialer) dialNew(ctx context.Context, network, address string) (net.Conn, error) {
+	ipv4, ipv6, _, err := d.archiveDNS(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	var ipv4Addr, ipv6Addr string
+	if ipv4 != nil {
+		ipv4Addr = net.JoinHostPort(ipv4.String(), port)
+	}
+	if ipv6 != nil {
+		ipv6Addr = net.JoinHostPort(ipv6.String(), port)
+	}
+	conn, _, err := d.dialParallel(ctx, network, ipv6Addr, ipv4Addr, ipv6, ipv4)
+	return conn, err
+}
+
+func (d *customDialer) resolveUDPAddr(ctx context.Context, address string) (*net.UDPAddr, error) {
+	ipv4, ipv6, _, err := d.archiveDNS(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ip := ipv6
+	if ip == nil {
+		ip = ipv4
+	}
+	return net.ResolveUDPAddr("udp", net.JoinHostPort(ip.String(), port))
 }
 
 var emptyPayloadDigests = []string{
@@ -71,15 +138,16 @@ type dialResult struct {
 }
 
 func (d *customDialer) dialParallel(ctx context.Context, network string, primaryAddr, fallbackAddr string, primaryIP, fallbackIP net.IP) (net.Conn, net.IP, error) {
+	baseNetwork := strings.TrimSuffix(strings.TrimSuffix(network, "4"), "6")
 	if fallbackAddr == "" && primaryAddr == "" {
 		return nil, nil, errors.New("no addresses available")
 	}
 	if fallbackAddr == "" {
-		conn, err := d.dialSingle(ctx, network+"6", primaryAddr, primaryIP)
+		conn, err := d.dialSingle(ctx, baseNetwork+"6", primaryAddr, primaryIP)
 		return conn, primaryIP, err
 	}
 	if primaryAddr == "" {
-		conn, err := d.dialSingle(ctx, network+"4", fallbackAddr, fallbackIP)
+		conn, err := d.dialSingle(ctx, baseNetwork+"4", fallbackAddr, fallbackIP)
 		return conn, fallbackIP, err
 	}
 
@@ -93,9 +161,9 @@ func (d *customDialer) dialParallel(ctx context.Context, network string, primary
 		var ip net.IP
 		var netType string
 		if primary {
-			addr, ip, netType = primaryAddr, primaryIP, network+"6"
+			addr, ip, netType = primaryAddr, primaryIP, baseNetwork+"6"
 		} else {
-			addr, ip, netType = fallbackAddr, fallbackIP, network+"4"
+			addr, ip, netType = fallbackAddr, fallbackIP, baseNetwork+"4"
 		}
 		conn, err := d.dialSingle(ctx, netType, addr, ip)
 		select {
@@ -160,8 +228,12 @@ func (d *customDialer) dialSingle(ctx context.Context, network, address string, 
 	return d.DialContext(ctx, network, address)
 }
 
-func newCustomDialer(httpClient *CustomHTTPClient, DialTimeout, DNSRecordsTTL, DNSResolutionTimeout time.Duration, DNSCacheSize int, DNSServers []string, DNSFallback *dns.ClientConfig, DNSConcurrency int, disableIPv4, disableIPv6 bool) *customDialer {
+func newCustomDialer(httpClient *CustomHTTPClient, DialTimeout, DNSRecordsTTL, DNSResolutionTimeout time.Duration, DNSCacheSize int, DNSServers []string, DNSFallback *dns.ClientConfig, DNSConcurrency int, disableIPv4, disableIPv6 bool) (*customDialer, error) {
 	d := new(customDialer)
+	d.lookupCtx, d.lookupCancel = context.WithCancel(context.WithValue(context.Background(), writerOwnerContextKey{}, true))
+	if DNSResolutionTimeout <= 0 {
+		DNSResolutionTimeout = 5 * time.Second
+	}
 
 	d.Timeout = DialTimeout
 	d.client = httpClient
@@ -169,23 +241,24 @@ func newCustomDialer(httpClient *CustomHTTPClient, DialTimeout, DNSRecordsTTL, D
 	d.disableIPv6 = disableIPv6
 	d.dnsConcurrency = DNSConcurrency
 
-	DNScache, err := otter.MustBuilder[string, dnsResult](DNSCacheSize).
-		WithTTL(DNSRecordsTTL).
-		Build()
-	if err != nil {
-		panic(err)
-	}
-
-	d.DNSRecords = &DNScache
-
+	var err error
 	d.DNSConfig, err = dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil || d.DNSConfig == nil {
 		if DNSFallback != nil {
 			d.DNSConfig = DNSFallback
 		} else {
-			panic(err)
+			return nil, fmt.Errorf("read resolver configuration: %w", err)
 		}
 	}
+
+	DNScache, err := otter.MustBuilder[string, dnsResult](DNSCacheSize).
+		WithTTL(DNSRecordsTTL).
+		Build()
+	if err != nil {
+		return nil, err
+	}
+
+	d.DNSRecords = &DNScache
 
 	if len(DNSServers) > 0 {
 		d.DNSConfig.Servers = DNSServers
@@ -196,64 +269,5 @@ func newCustomDialer(httpClient *CustomHTTPClient, DialTimeout, DNSRecordsTTL, D
 		Timeout: DNSResolutionTimeout,
 	}
 
-	return d
-}
-
-// CustomConnection is kept for backward compatibility with WithWrappedConnection.
-type CustomConnection struct {
-	net.Conn
-	io.Reader
-	io.Writer
-	closers []*io.PipeWriter
-	sync.WaitGroup
-	connReadDeadline time.Duration
-	firstRead        sync.Once
-}
-
-func (cc *CustomConnection) setReadDeadline() error {
-	if cc.connReadDeadline > 0 {
-		if err := cc.Conn.SetReadDeadline(time.Now().Add(cc.connReadDeadline)); err != nil {
-			return errors.New("CustomConnection.Read: SetReadDeadline failed: " + err.Error())
-		}
-	}
-	return nil
-}
-
-func (cc *CustomConnection) Read(b []byte) (int, error) {
-	cc.firstRead.Do(func() {
-		if err := cc.setReadDeadline(); err != nil {
-			cc.CloseWithError(err)
-		}
-	})
-	c, err := cc.Reader.Read(b)
-	if err != nil {
-		cc.CloseWithError(err)
-		return c, err
-	}
-	cc.setReadDeadline()
-	return c, err
-}
-
-func (cc *CustomConnection) Write(b []byte) (int, error) {
-	return cc.Writer.Write(b)
-}
-
-func (cc *CustomConnection) Close() error {
-	return cc.CloseWithError(nil)
-}
-
-func (cc *CustomConnection) CloseWithError(err error) error {
-	var closeErrors []error
-
-	for _, c := range cc.closers {
-		if closeErr := c.CloseWithError(err); closeErr != nil {
-			closeErrors = append(closeErrors, fmt.Errorf("closing pipe writer failed: %w", closeErr))
-		}
-	}
-
-	if connErr := cc.Conn.Close(); connErr != nil {
-		closeErrors = append(closeErrors, fmt.Errorf("closing connection failed: %w", connErr))
-	}
-
-	return errors.Join(closeErrors...)
+	return d, nil
 }

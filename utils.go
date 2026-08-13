@@ -25,7 +25,7 @@ func splitKeyValue(line string) (string, string) {
 
 func isHTTPRequest(line string) bool {
 	httpMethods := []string{"GET ", "HEAD ", "POST ", "PUT ", "DELETE ", "CONNECT ", "OPTIONS ", "TRACE ", "PATCH "}
-	protocols := []string{"HTTP/1.0", "HTTP/1.1"}
+	protocols := []string{"HTTP/1.0", "HTTP/1.1", "HTTP/2.0", "HTTP/3.0"}
 
 	for _, method := range httpMethods {
 		if strings.HasPrefix(line, method) {
@@ -115,16 +115,24 @@ func NewWriter(writer io.Writer, fileName string, digestAlgorithm DigestAlgorith
 
 // NewRecord creates a new WARC record.
 func NewRecord(tempDir string) *Record {
-	content, err := spooledtempfile.NewSpooledTempFile("warc", tempDir)
+	record, err := newRecord(tempDir)
 	if err != nil {
 		panic(err)
+	}
+	return record
+}
+
+func newRecord(tempDir string) (*Record, error) {
+	content, err := spooledtempfile.NewSpooledTempFile("warc", tempDir)
+	if err != nil {
+		return nil, err
 	}
 	return &Record{
 		RecordInfo: RecordInfo{
 			Header: NewHeader(),
 		},
 		Content: content,
-	}
+	}, nil
 }
 
 // NewRecordBatch creates a record batch, it also initialize the capture time.
@@ -132,6 +140,7 @@ func NewRecordBatch(feedbackChan chan FeedbackEvent) *RecordBatch {
 	return &RecordBatch{
 		CaptureTime:  time.Now().UTC().Format(time.RFC3339Nano),
 		FeedbackChan: feedbackChan,
+		resultDone:   make(chan struct{}),
 	}
 }
 

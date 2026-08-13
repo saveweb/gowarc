@@ -105,3 +105,35 @@ func TestConcurrentGetNextWarcFileName(t *testing.T) {
 	close(results)
 	close(errors)
 }
+
+func TestRecordsInWriteOrder(t *testing.T) {
+	request := NewRecord("")
+	defer request.Content.Close()
+	request.Header.Set("WARC-Type", "request")
+	response := NewRecord("")
+	defer response.Content.Close()
+	response.Header.Set("WARC-Type", "response")
+	metadata := NewRecord("")
+	defer metadata.Content.Close()
+	metadata.Header.Set("WARC-Type", "metadata")
+
+	reversed := []*Record{response, request}
+	ordered := recordsInWriteOrder(reversed, false)
+	if ordered[0] != request || ordered[1] != response {
+		t.Fatalf("default order = [%s, %s]", ordered[0].Header.Get("WARC-Type"), ordered[1].Header.Get("WARC-Type"))
+	}
+	if reversed[0] != response || reversed[1] != request {
+		t.Fatal("recordsInWriteOrder mutated the caller's slice")
+	}
+
+	ordered = recordsInWriteOrder([]*Record{request, response}, true)
+	if ordered[0] != response || ordered[1] != request {
+		t.Fatalf("IA order = [%s, %s]", ordered[0].Header.Get("WARC-Type"), ordered[1].Header.Get("WARC-Type"))
+	}
+
+	nonHTTP := []*Record{metadata, request}
+	ordered = recordsInWriteOrder(nonHTTP, true)
+	if ordered[0] != metadata || ordered[1] != request {
+		t.Fatal("non-HTTP batch was reordered")
+	}
+}

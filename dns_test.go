@@ -46,7 +46,7 @@ type cancellationIgnoringDNSClient struct {
 }
 
 func (c cancellationIgnoringDNSClient) ExchangeContext(_ context.Context, msg *dns.Msg, address string) (*dns.Msg, time.Duration, error) {
-	if address == c.slowServer {
+	if c.slowServer == "" || address == c.slowServer {
 		time.Sleep(c.delay)
 	}
 	r := new(dns.Msg)
@@ -638,11 +638,11 @@ func TestDNSEarlyCancellation(t *testing.T) {
 	t.Logf("Call log: %v", callLog)
 }
 
-func TestDNSEarlyCancellationWaitsForWorkers(t *testing.T) {
+func TestDNSWaiterCanCancelBeforeResolverShutdownJoinsWorkers(t *testing.T) {
 	d := newTestCustomDialer()
 	d.dnsConcurrency = 2
 	d.DNSConfig.Servers = []string{"1.1.1.1", "2.2.2.2"}
-	d.DNSClient = cancellationIgnoringDNSClient{slowServer: "2.2.2.2:53", delay: 100 * time.Millisecond}
+	d.DNSClient = cancellationIgnoringDNSClient{delay: 100 * time.Millisecond}
 	d.client = &CustomHTTPClient{WARCWriter: make(chan *RecordBatch)}
 
 	drained := make(chan struct{})
@@ -653,18 +653,27 @@ func TestDNSEarlyCancellationWaitsForWorkers(t *testing.T) {
 		}
 	}()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
 	start := time.Now()
-	_, _, _, err := d.archiveDNS(context.Background(), target)
-	if err != nil {
-		t.Fatal(err)
+	_, _, _, err := d.archiveDNS(ctx, target)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("archiveDNS error = %v, want context canceled", err)
 	}
-	if elapsed := time.Since(start); elapsed < 75*time.Millisecond {
-		t.Fatalf("archiveDNS returned after %v while a DNS worker was still running", elapsed)
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("canceled waiter returned after %v", elapsed)
+	}
+	shutdownStart := time.Now()
+	d.close()
+	if elapsed := time.Since(shutdownStart); elapsed < 75*time.Millisecond {
+		t.Fatalf("resolver shutdown returned after %v while a DNS worker was still running", elapsed)
 	}
 
 	close(d.client.WARCWriter)
 	<-drained
-	d.DNSRecords.Close()
 }
 
 // TestDNSIPv4Only tests IPv6-disabled mode

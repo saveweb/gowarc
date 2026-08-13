@@ -2,11 +2,10 @@ package warc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/miekg/dns"
 )
@@ -60,6 +59,9 @@ func (d *customDialer) archiveDNS(ctx context.Context, address string) (ipv4, ip
 
 	var errA, errAAAA error
 	ipv4, ipv6, errA, errAAAA = d.concurrentDNSLookup(ctx, host, len(d.DNSConfig.Servers))
+	if ctx.Err() != nil {
+		return nil, nil, false, context.Cause(ctx)
+	}
 	if errA != nil && errAAAA != nil {
 		return nil, nil, false, fmt.Errorf("failed to resolve DNS: A error: %v, AAAA error: %v", errA, errAAAA)
 	}
@@ -168,11 +170,19 @@ func (d *customDialer) concurrentDNSLookup(ctx context.Context, address string, 
 		close(resultChan)
 	}()
 
-	// Collect results with early termination
+	// Collect results. Caller cancellation and a complete answer stop this
+	// waiter immediately; resolver-owned shared lookups finish independently.
 	var ipv4Errors, ipv6Errors []error
-	for res := range resultChan {
-		if haveAllResults() {
-			continue
+	for {
+		var res result
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return nil, nil, context.Cause(ctx), context.Cause(ctx)
+		case res, ok = <-resultChan:
+			if !ok {
+				goto complete
+			}
 		}
 		if res.err == nil {
 			if res.recordType == dns.TypeA && ipv4 == nil {
@@ -184,6 +194,7 @@ func (d *customDialer) concurrentDNSLookup(ctx context.Context, address string, 
 			// Early termination: if we have all results, cancel workers
 			if haveAllResults() {
 				cancel()
+				return ipv4, ipv6, nil, nil
 			}
 		} else {
 			if res.recordType == dns.TypeA {
@@ -194,6 +205,7 @@ func (d *customDialer) concurrentDNSLookup(ctx context.Context, address string, 
 		}
 	}
 
+complete:
 	// Set errors only if all queries of that type failed
 	if ipv4 == nil && len(ipv4Errors) > 0 {
 		errA = ipv4Errors[0]
@@ -205,8 +217,6 @@ func (d *customDialer) concurrentDNSLookup(ctx context.Context, address string, 
 	return ipv4, ipv6, errA, errAAAA
 }
 
-var g singleflight.Group
-
 func (d *customDialer) lookupIP(ctx context.Context, address string, recordType uint16, DNSServer int) (net.IP, error) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(address), recordType)
@@ -217,23 +227,42 @@ func (d *customDialer) lookupIP(ctx context.Context, address string, recordType 
 	}
 
 	uniqKey := d.DNSConfig.Servers[DNSServer] + ":" + d.DNSConfig.Port + ":" + recordTypeStr + ":" + address
-	v, err, _ := g.Do(uniqKey, func() (any, error) {
-		r, _, err := d.DNSClient.ExchangeContext(ctx, m, net.JoinHostPort(d.DNSConfig.Servers[DNSServer], d.DNSConfig.Port))
+	if !d.beginLookup() {
+		return nil, errors.New("warc: DNS resolver is closing")
+	}
+	result := d.dnsGroup.DoChan(uniqKey, func() (any, error) {
+		r, _, err := d.DNSClient.ExchangeContext(d.lookupCtx, m, net.JoinHostPort(d.DNSConfig.Servers[DNSServer], d.DNSConfig.Port))
 		if err != nil {
 			return nil, err
 		}
 
 		// Record the DNS response
-		d.client.WriteRecord(fmt.Sprintf("dns:%s?%s", address, recordTypeStr), "resource", "text/dns", r.String(), nil)
+		if d.client != nil && d.client.WARCWriter != nil && d.client.WaitGroup != nil {
+			if _, err := d.client.WriteRecordContext(d.lookupCtx, fmt.Sprintf("dns:%s?%s", address, recordTypeStr), "resource", "text/dns", r.String(), nil); err != nil {
+				return nil, fmt.Errorf("archive DNS response: %w", err)
+			}
+		}
 
 		return r, nil
 	})
-
-	if err != nil {
-		return nil, err
+	select {
+	case result := <-result:
+		d.lookupWG.Done()
+		if result.Err != nil {
+			return nil, result.Err
+		}
+		return dnsAnswer(result.Val, recordType, recordTypeStr)
+	case <-ctx.Done():
+		go func() {
+			<-result
+			d.lookupWG.Done()
+		}()
+		return nil, context.Cause(ctx)
 	}
+}
 
-	r, ok := v.(*dns.Msg)
+func dnsAnswer(value any, recordType uint16, recordTypeStr string) (net.IP, error) {
+	r, ok := value.(*dns.Msg)
 	if !ok {
 		return nil, fmt.Errorf("unexpected response type: %T", r)
 	}

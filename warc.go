@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -57,10 +58,40 @@ type RotatorSettings struct {
 	WARCSize float64
 	// WARCWriterPoolSize defines the number of parallel WARC writers
 	WARCWriterPoolSize int
-	// You can get warc filename from this channel after each WARC file is written and closed and renamed to non-temp name.
-	// - `nil` to disable
-	// - it's your responsibility to close this channel
-	WARCFilenameFeedbackChan chan string
+	// UseInternetArchiveRecordOrder writes each HTTP exchange as response then
+	// request. The default order is request then response.
+	//
+	// IA has a quirk of placing response records at the beginning - They claim
+	// this benefits performance, but I've thought about it for two years without
+	// figuring out why.
+	UseInternetArchiveRecordOrder bool
+}
+
+type writerResult struct {
+	FinalizedFiles []string
+	Err            error
+}
+
+type rotatorController struct {
+	once     sync.Once
+	terminal chan struct{}
+	err      error
+}
+
+func newRotatorController() *rotatorController {
+	return &rotatorController{terminal: make(chan struct{})}
+}
+
+func (c *rotatorController) fail(err error, records <-chan *RecordBatch) {
+	c.once.Do(func() {
+		c.err = err
+		close(c.terminal)
+		go func() {
+			for batch := range records {
+				batch.resolve(WriteResult{Err: err})
+			}
+		}()
+	})
 }
 
 var (
@@ -80,6 +111,11 @@ var (
 // to communicate records to be written to WARC files to the
 // recordWriter function running in a goroutine
 func (s *RotatorSettings) NewWARCRotator() (recordWriterChan chan *RecordBatch, doneChannels []chan bool, err error) {
+	recordWriterChan, doneChannels, _, err = s.newWARCRotator()
+	return recordWriterChan, doneChannels, err
+}
+
+func (s *RotatorSettings) newWARCRotator() (recordWriterChan chan *RecordBatch, doneChannels []chan bool, writerResults []<-chan writerResult, err error) {
 	recordWriterChan = make(chan *RecordBatch, 1)
 
 	// Create global atomicSerial number for numbering WARC files.
@@ -88,7 +124,7 @@ func (s *RotatorSettings) NewWARCRotator() (recordWriterChan chan *RecordBatch, 
 	// Check the rotator settings and set default values
 	err = checkRotatorSettings(s)
 	if err != nil {
-		return recordWriterChan, doneChannels, err
+		return recordWriterChan, doneChannels, writerResults, err
 	}
 
 	var dictionary []byte
@@ -96,18 +132,21 @@ func (s *RotatorSettings) NewWARCRotator() (recordWriterChan chan *RecordBatch, 
 	if s.CompressionDictionary != "" {
 		dictionary, err = os.ReadFile(s.CompressionDictionary)
 		if err != nil {
-			panic(fmt.Sprintf("failed to read compression dictionary file %s: %v", s.CompressionDictionary, err))
+			return recordWriterChan, doneChannels, writerResults, fmt.Errorf("read compression dictionary %q: %w", s.CompressionDictionary, err)
 		}
 	}
 
+	controller := newRotatorController()
 	for i := 0; i < s.WARCWriterPoolSize; i++ {
 		doneChan := make(chan bool)
+		resultChan := make(chan writerResult, 1)
 		doneChannels = append(doneChannels, doneChan)
+		writerResults = append(writerResults, resultChan)
 
-		go recordWriter(s, recordWriterChan, doneChan, serial, dictionary)
+		go recordWriter(s, recordWriterChan, doneChan, resultChan, serial, dictionary, controller)
 	}
 
-	return recordWriterChan, doneChannels, nil
+	return recordWriterChan, doneChannels, writerResults, nil
 }
 
 // reset resets the compressed writer to write to a new output.
@@ -135,93 +174,181 @@ func (w *Writer) FlushAndCloseCompressor() (err error) {
 	}
 }
 
-func getNextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64, hostname string) (nextWARCFilenameWithOpenExt string) {
-	nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial, hostname)
+func getNextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64, hostname string) string {
+	name, err := nextWARCFilename(outputDir, prefix, compression, serial, hostname)
+	if err != nil {
+		panic(err)
+	}
+	return name
+}
+
+func nextWARCFilename(outputDir, prefix string, compression compressionType, serial *atomic.Uint64, hostname string) (string, error) {
+	nextWARCFilenameWithOpenExt := generateWARCFilename(prefix, compression, serial, hostname)
 	_, err := os.Stat(path.Join(outputDir, nextWARCFilenameWithOpenExt))
 	for !errors.Is(err, os.ErrNotExist) {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			panic(err)
+			return "", err
 		}
 
 		nextWARCFilenameWithOpenExt = generateWARCFilename(prefix, compression, serial, hostname)
 		_, err = os.Stat(path.Join(outputDir, nextWARCFilenameWithOpenExt))
 	}
 
-	return
+	return nextWARCFilenameWithOpenExt, nil
 }
 
-func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done chan bool, serial *atomic.Uint64, dictionary []byte) {
-	var (
-		currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial, settings.WarcinfoContent.Get("hostname"))
-		currentWarcinfoRecordID    string
-	)
+func recordsInWriteOrder(records []*Record, useIAOrder bool) []*Record {
+	if len(records) != 2 {
+		return records
+	}
+	firstType := records[0].Header.Get("WARC-Type")
+	secondType := records[1].Header.Get("WARC-Type")
+	if !((firstType == "request" && secondType == "response") || (firstType == "response" && secondType == "request")) {
+		return records
+	}
+	wantFirst := "request"
+	if useIAOrder {
+		wantFirst = "response"
+	}
+	if firstType == wantFirst {
+		return records
+	}
+	// Copy before swapping so writer policy never mutates a caller-owned batch.
+	ordered := append([]*Record(nil), records...)
+	ordered[0], ordered[1] = ordered[1], ordered[0]
+	return ordered
+}
+
+func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done chan bool, result chan<- writerResult, serial *atomic.Uint64, dictionary []byte, controller *rotatorController) {
+	var finalized []string
+	finish := func(err error) {
+		result <- writerResult{FinalizedFiles: finalized, Err: err}
+		close(result)
+		close(done)
+	}
+	currentFileNameWithOpenExt, err := nextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial, settings.WarcinfoContent.Get("hostname"))
+	if err != nil {
+		controller.fail(err, records)
+		finish(err)
+		return
+	}
+	var currentWarcinfoRecordID string
 
 	// Create and open the initial file
 	warcFile, err := os.Create(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt))
 	if err != nil {
-		panic(err)
+		controller.fail(err, records)
+		finish(err)
+		return
 	}
 
 	// Initialize WARC writer (write dictionary if specified)
 	warcWriter, err := NewWriter(warcFile, currentFileNameWithOpenExt, settings.digestAlgorithm, settings.Compression, true, dictionary)
 	if err != nil {
-		panic(err)
+		_ = warcFile.Close()
+		controller.fail(err, records)
+		finish(err)
+		return
 	}
 
 	// Write the info record
 	currentWarcinfoRecordID, err = warcWriter.WriteInfoRecord(settings.WarcinfoContent)
 	if err != nil {
-		panic(err)
+		_ = warcFile.Close()
+		controller.fail(err, records)
+		finish(err)
+		return
 	}
 
 	for {
-		recordBatch, more := <-records
+		var recordBatch *RecordBatch
+		var more bool
+		select {
+		case <-controller.terminal:
+			_ = warcFile.Close()
+			finish(controller.err)
+			return
+		case recordBatch, more = <-records:
+		}
 		if more {
+			select {
+			case <-controller.terminal:
+				recordBatch.resolve(WriteResult{Err: controller.err})
+				_ = warcFile.Close()
+				finish(controller.err)
+				return
+			default:
+			}
 			if isFileSizeExceeded(warcFile, settings.WARCSize) {
 				// WARC file size exceeded settings.WarcSize
 				// We flush the data and close the file
 				err = warcWriter.FlushAndCloseCompressor()
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					_ = warcFile.Close()
+					finish(err)
+					return
 				}
 
 				err = warcFile.Close()
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					finish(err)
+					return
 				}
 				// The WARC file is renamed to remove the .open suffix
 				err := os.Rename(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt), strings.TrimSuffix(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt), ".open"))
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					finish(err)
+					return
 				}
-
-				if settings.WARCFilenameFeedbackChan != nil {
-					settings.WARCFilenameFeedbackChan <- strings.TrimSuffix(currentFileNameWithOpenExt, ".open")
-				}
+				finalized = append(finalized, strings.TrimSuffix(currentFileNameWithOpenExt, ".open"))
 
 				// Create the new file and automatically increment the serial inside of GenerateWarcFileName
-				currentFileNameWithOpenExt = getNextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial, settings.WarcinfoContent.Get("hostname"))
+				currentFileNameWithOpenExt, err = nextWARCFilename(settings.OutputDirectory, settings.Prefix, settings.Compression, serial, settings.WarcinfoContent.Get("hostname"))
+				if err != nil {
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					finish(err)
+					return
+				}
 				warcFile, err = os.Create(filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt))
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					finish(err)
+					return
 				}
 
 				// Initialize new WARC writer
 				warcWriter, err = NewWriter(warcFile, currentFileNameWithOpenExt, settings.digestAlgorithm, settings.Compression, true, dictionary)
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					_ = warcFile.Close()
+					finish(err)
+					return
 				}
 
 				// Write the info record
 				currentWarcinfoRecordID, err = warcWriter.WriteInfoRecord(settings.WarcinfoContent)
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					_ = warcFile.Close()
+					finish(err)
+					return
 				}
 			}
 
-			recordsEvents := make([]RecordEvent, 0, len(recordBatch.Records))
+			orderedRecords := recordsInWriteOrder(recordBatch.Records, settings.UseInternetArchiveRecordOrder)
+			recordsEvents := make([]RecordEvent, 0, len(orderedRecords))
 			// Write all the records of the record batch
-			for _, record := range recordBatch.Records {
+			for _, record := range orderedRecords {
 				warcWriter.Reset(warcFile)
 
 				record.Header.Set("WARC-Date", recordBatch.CaptureTime)
@@ -229,41 +356,41 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 
 				_, err := warcWriter.WriteRecord(record)
 				if err != nil {
-					panic(err)
+					recordBatch.resolve(WriteResult{Err: err})
+					controller.fail(err, records)
+					_ = warcFile.Close()
+					finish(err)
+					return
 				}
 				recordsEvents = append(recordsEvents, RecordEvent{RecordInfo: record.RecordInfo, WARCFilename: strings.TrimSuffix(currentFileNameWithOpenExt, ".open")})
 			}
 
-			if recordBatch.FeedbackChan != nil {
-				recordBatch.FeedbackChan <- recordsEvents
-				close(recordBatch.FeedbackChan)
-			}
+			recordBatch.resolve(WriteResult{Events: recordsEvents})
 		} else {
 			// Channel has been closed
 			// We flush the data, close the file, and rename it
 			err = warcWriter.FlushAndCloseCompressor()
 			if err != nil {
-				panic(err)
+				finish(err)
+				return
 			}
 
 			err = warcFile.Close()
 			if err != nil {
-				panic(err)
+				finish(err)
+				return
 			}
 
 			// The WARC file is renamed to remove the .open suffix
 			fullPath := filepath.Join(settings.OutputDirectory, currentFileNameWithOpenExt)
 			err := os.Rename(fullPath, strings.TrimSuffix(fullPath, ".open"))
 			if err != nil {
-				panic(err)
+				finish(err)
+				return
 			}
+			finalized = append(finalized, strings.TrimSuffix(currentFileNameWithOpenExt, ".open"))
 
-			if settings.WARCFilenameFeedbackChan != nil {
-				settings.WARCFilenameFeedbackChan <- strings.TrimSuffix(currentFileNameWithOpenExt, ".open")
-			}
-
-			done <- true
-
+			finish(nil)
 			return
 		}
 	}

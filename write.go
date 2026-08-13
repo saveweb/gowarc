@@ -3,10 +3,13 @@ package warc
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +47,36 @@ type RecordBatch struct {
 	FeedbackChan chan FeedbackEvent
 	CaptureTime  string
 	Records      []*Record
+	resultDone   chan struct{}
+	result       WriteResult
+	resultOnce   sync.Once
+}
+
+type WriteResult struct {
+	Events FeedbackEvent
+	Err    error
+}
+
+func (b *RecordBatch) resolve(result WriteResult) {
+	b.resultOnce.Do(func() {
+		b.result = result
+		close(b.resultDone)
+		if b.FeedbackChan != nil {
+			if result.Err == nil {
+				b.FeedbackChan <- result.Events
+			}
+			close(b.FeedbackChan)
+		}
+	})
+}
+
+func (b *RecordBatch) Wait(ctx context.Context) (WriteResult, error) {
+	select {
+	case <-b.resultDone:
+		return b.result, b.result.Err
+	case <-ctx.Done():
+		return WriteResult{}, context.Cause(ctx)
+	}
 }
 
 type RecordInfo struct {
@@ -76,7 +109,9 @@ type RecordEvent struct {
 //	CLRF
 //	CLRF
 func (w *Writer) WriteRecord(r *Record) (recordID string, err error) {
-	defer r.Content.Close()
+	defer func() {
+		err = errors.Join(err, r.Content.Close())
+	}()
 
 	// Add the mandatories headers
 	if r.Header.Get("WARC-Date") == "" {
@@ -97,7 +132,10 @@ func (w *Writer) WriteRecord(r *Record) (recordID string, err error) {
 		contentLength, err = strconv.ParseInt(CL, 10, 64)
 	}
 	if r.Header.Get("Content-Length") == "" || err != nil {
-		contentLength = getContentLength(r.Content)
+		contentLength = r.Content.Len()
+		if contentLength < 0 {
+			return recordID, errors.New("warc: cannot stat record content")
+		}
 		r.Header.Set("Content-Length", strconv.FormatInt(contentLength, 10))
 	}
 
@@ -169,7 +207,10 @@ func (w *Writer) setCompressorContentSize(size int64) {
 // WriteInfoRecord method can be used to write an information record to the WARC file and flush the data
 func (w *Writer) WriteInfoRecord(payload Header) (recordID string, err error) {
 	// Initialize the record
-	infoRecord := NewRecord("")
+	infoRecord, err := newRecord("")
+	if err != nil {
+		return "", err
+	}
 
 	// Set the headers
 	infoRecord.Header.Set("WARC-Date", time.Now().UTC().Format(time.RFC3339Nano))

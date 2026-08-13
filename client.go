@@ -1,7 +1,12 @@
 package warc
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +36,6 @@ type HTTPClientSettings struct {
 	DNSConcurrency          int
 	TLSHandshakeTimeout     time.Duration
 	ConnReadDeadline        time.Duration
-	MaxReadBeforeTruncate   int // todo
 	DecompressBody          bool
 	FollowRedirects         bool
 	InsecureSkipVerifyCerts bool
@@ -40,13 +44,16 @@ type HTTPClientSettings struct {
 	DisableIPv6             bool
 	IPv6AnyIP               bool
 	DigestAlgorithm         DigestAlgorithm
-	EnableKeepAlive         bool
+	DisableKeepAlives       bool
 	DefaultUserAgent        string
 	ClientProfile           profiles.ClientProfile
 	RandomTLSExtensionOrder bool
 	MaxIdleConns            int
 	MaxIdleConnsPerHost     int
 	IdleConnTimeout         time.Duration
+	EarlyCloseDrainLimit    int64
+	EarlyCloseDrainTimeout  time.Duration
+	MaxConcurrentDrains     int
 	EnableHTTP2             bool
 	EnableHTTP3             bool
 	ForceProtocol           string // "http/1.1", "h2", "h3"
@@ -62,21 +69,34 @@ type CustomHTTPClient struct {
 	protoClient              protocolClient
 	TempDir                  string
 	warcWriterDoneChannels   []chan bool
+	writerResults            []<-chan writerResult
 	dedupeOptions            DedupeOptions
 	TLSHandshakeTimeout      time.Duration
+	ResponseHeaderTimeout    time.Duration
 	ConnReadDeadline         time.Duration
-	MaxReadBeforeTruncate    int // todo
 	insecureSkipVerifyCerts  bool
 	DigestAlgorithm          DigestAlgorithm
 	closeDNSCache            func()
 	closeDedupeCache         func()
 	randomLocalIP            bool
 	DataTotal                *atomic.Int64
-	enableKeepAlive          bool
+	disableKeepAlives        bool
 	keepAliveMaxIdle         int
+	keepAliveMaxIdlePerHost  int
 	keepAliveIdleTimeout     time.Duration
+	earlyCloseDrainLimit     int64
+	earlyCloseDrainTimeout   time.Duration
+	drainSlots               chan struct{}
 	DecompressBody           bool
 	defaultUserAgent         string
+	followRedirects          bool
+	randomTLSExtensionOrder  bool
+	compatWG                 sync.WaitGroup
+	lifecycleMu              sync.Mutex
+	closing                  bool
+	shutdownOnce             sync.Once
+	shutdownDone             chan struct{}
+	shutdownResult           FinalizeResult
 
 	CDXDedupeTotalBytes          *atomic.Int64
 	DoppelgangerDedupeTotalBytes *atomic.Int64
@@ -98,26 +118,59 @@ type CustomHTTPClient struct {
 	tlsProfile           *TLSProfile
 }
 
-func (c *CustomHTTPClient) Close() error {
-	var wg sync.WaitGroup
-	c.WaitGroup.Wait()
+type FinalizeResult struct {
+	FinalizedFiles []string
+	Err            error
+}
 
-	if c.protoClient != nil {
-		c.protoClient.Close()
+// Shutdown stops new work and waits for every active capture and WARC writer
+// to finish. The returned filenames have been flushed, closed and renamed.
+// ctx controls only how long the caller waits; shutdown itself continues.
+func (c *CustomHTTPClient) Shutdown(ctx context.Context) (FinalizeResult, error) {
+	c.shutdownOnce.Do(func() {
+		c.lifecycleMu.Lock()
+		c.closing = true
+		c.lifecycleMu.Unlock()
+		go c.runShutdown()
+	})
+	select {
+	case <-c.shutdownDone:
+		result := c.shutdownResult
+		result.FinalizedFiles = append([]string(nil), result.FinalizedFiles...)
+		return result, result.Err
+	case <-ctx.Done():
+		return FinalizeResult{}, context.Cause(ctx)
 	}
+}
+
+func (c *CustomHTTPClient) runShutdown() {
+	defer close(c.shutdownDone)
+	var wg sync.WaitGroup
+	if c.protoClient != nil {
+		c.protoClient.Shutdown()
+	}
+	c.WaitGroup.Wait()
 
 	close(c.WARCWriter)
 
 	wg.Add(len(c.warcWriterDoneChannels))
 	for _, doneChan := range c.warcWriterDoneChannels {
-		go func(done chan bool) {
+		go func(done <-chan bool) {
 			defer wg.Done()
 			<-done
 		}(doneChan)
 	}
 
 	wg.Wait()
+	var writerErrs []error
+	var finalizedFiles []string
+	for _, resultChan := range c.writerResults {
+		result := <-resultChan
+		writerErrs = append(writerErrs, result.Err)
+		finalizedFiles = append(finalizedFiles, result.FinalizedFiles...)
+	}
 
+	c.compatWG.Wait()
 	close(c.ErrChan)
 
 	if c.randomLocalIP {
@@ -125,15 +178,82 @@ func (c *CustomHTTPClient) Close() error {
 		close(c.interfacesWatcherStop)
 	}
 
-	c.closeDNSCache()
 	c.closeDedupeCache()
+	c.shutdownResult = FinalizeResult{FinalizedFiles: finalizedFiles, Err: errors.Join(writerErrs...)}
+}
 
-	return nil
+// Close is the compatibility form of Shutdown.
+func (c *CustomHTTPClient) Close() error {
+	_, err := c.Shutdown(context.Background())
+	return err
 }
 
 func (c *CustomHTTPClient) Do(req *http.Request) (*http.Response, error) {
-	resp, _, err := c.protoClient.Do(req.Context(), req)
-	return resp, err
+	c.lifecycleMu.Lock()
+	if c.closing {
+		c.lifecycleMu.Unlock()
+		return nil, errors.New("warc: client is closing")
+	}
+	c.compatWG.Add(1)
+	c.lifecycleMu.Unlock()
+	exchange, err := c.Start(req)
+	if exchange == nil {
+		c.compatWG.Done()
+		return nil, err
+	}
+	go func() {
+		defer c.compatWG.Done()
+		result, _ := exchange.Wait(context.Background())
+		var archiveErrs []error
+		for _, attempt := range result.Attempts {
+			archiveErrs = append(archiveErrs, attempt.Err)
+		}
+		archiveErr := errors.Join(archiveErrs...)
+		if archiveErr == nil {
+			return
+		}
+		select {
+		case c.ErrChan <- &Error{Err: archiveErr, Func: "Exchange.Wait"}:
+		default:
+		}
+	}()
+	return exchange.Response, err
+}
+
+// Start executes req and returns an Exchange whose Wait method reports the
+// durable archival result independently from receiving response headers.
+func (c *CustomHTTPClient) Start(req *http.Request) (*Exchange, error) {
+	if req == nil {
+		return nil, errors.New("warc: nil request")
+	}
+	c.lifecycleMu.Lock()
+	if c.closing {
+		c.lifecycleMu.Unlock()
+		return nil, errors.New("warc: client is closing")
+	}
+	var feedback chan FeedbackEvent
+	if value := req.Context().Value(ContextKeyFeedback); value != nil {
+		var ok bool
+		feedback, ok = value.(chan FeedbackEvent)
+		if !ok {
+			c.lifecycleMu.Unlock()
+			return nil, errors.New("warc: feedback channel has invalid type")
+		}
+		if cap(feedback) == 0 {
+			c.lifecycleMu.Unlock()
+			return nil, errors.New("warc: feedback channel must be buffered")
+		}
+	}
+	state := newExchangeState(c, feedback)
+	ctx := context.WithValue(req.Context(), exchangeContextKey{}, state)
+	req = req.Clone(ctx)
+	req.URL.Scheme = strings.ToLower(req.URL.Scheme)
+	c.WaitGroup.Add(1)
+	c.lifecycleMu.Unlock()
+	resp, err := c.protoClient.Do(ctx, req)
+	c.WaitGroup.Done()
+	exchange := &Exchange{Response: resp, state: state}
+	return exchange, err
 }
 
 func (c *CustomHTTPClient) Get(url string) (*http.Response, error) {
@@ -153,29 +273,35 @@ func (c *CustomHTTPClient) Head(url string) (*http.Response, error) {
 }
 
 func (c *CustomHTTPClient) Post(url, contentType string, body interface{}) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+	reader, ok := body.(io.Reader)
+	if body != nil && !ok {
+		return nil, fmt.Errorf("warc: POST body has type %T, want io.Reader", body)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, reader)
 	if err != nil {
 		return nil, err
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	return c.Do(req)
 }
 
 func (c *CustomHTTPClient) CloseIdleConnections() {
 	if c.protoClient != nil {
-		c.protoClient.Close()
+		c.protoClient.CloseIdleConnections()
 	}
-}
-
-func (c *CustomHTTPClient) GetConnPoolStats() *ConnPoolStats {
-	if h1, ok := c.protoClient.(*http11Client); ok {
-		stats := h1.pool.Stats()
-		return &stats
-	}
-	return nil
 }
 
 func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient *CustomHTTPClient, err error) {
+	if HTTPClientSettings.RotatorSettings == nil {
+		return nil, errors.New("warc: RotatorSettings is required")
+	}
+	if err := checkRotatorSettings(HTTPClientSettings.RotatorSettings); err != nil {
+		return nil, err
+	}
 	httpClient = new(CustomHTTPClient)
+	httpClient.shutdownDone = make(chan struct{})
 
 	httpClient.DataTotal = &DataTotal
 
@@ -188,12 +314,6 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	httpClient.LocalDedupeTotal = &LocalDedupeTotal
 
 	httpClient.randomLocalIP = HTTPClientSettings.RandomLocalIP
-	if httpClient.randomLocalIP {
-		httpClient.interfacesWatcherStop = make(chan bool)
-		httpClient.interfacesWatcherStarted = make(chan bool)
-		go httpClient.getAvailableIPs(HTTPClientSettings.IPv6AnyIP)
-		<-httpClient.interfacesWatcherStarted
-	}
 
 	httpClient.DigestAlgorithm = HTTPClientSettings.DigestAlgorithm
 	HTTPClientSettings.RotatorSettings.digestAlgorithm = HTTPClientSettings.DigestAlgorithm
@@ -213,14 +333,23 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 
 	httpClient.closeDedupeCache = func() {
 		httpClient.dedupeHashTable.Close()
-		time.Sleep(1 * time.Second)
 	}
+	constructed := false
+	defer func() {
+		if constructed {
+			return
+		}
+		if httpClient.protoClient != nil {
+			httpClient.protoClient.Shutdown()
+		}
+		httpClient.closeDedupeCache()
+	}()
 
 	if httpClient.dedupeOptions.SizeThreshold == 0 {
 		httpClient.dedupeOptions.SizeThreshold = 2048
 	}
 
-	httpClient.ErrChan = make(chan *Error)
+	httpClient.ErrChan = make(chan *Error, 64)
 
 	httpClient.insecureSkipVerifyCerts = HTTPClientSettings.InsecureSkipVerifyCerts
 
@@ -232,18 +361,7 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 		}
 	}
 
-	if HTTPClientSettings.MaxReadBeforeTruncate == 0 {
-		httpClient.MaxReadBeforeTruncate = 1000000000
-	} else {
-		httpClient.MaxReadBeforeTruncate = HTTPClientSettings.MaxReadBeforeTruncate
-	}
-
 	httpClient.WaitGroup = new(WaitGroupWithCount)
-
-	httpClient.WARCWriter, httpClient.warcWriterDoneChannels, err = HTTPClientSettings.RotatorSettings.NewWARCRotator()
-	if err != nil {
-		return nil, err
-	}
 
 	if HTTPClientSettings.DialTimeout == 0 {
 		HTTPClientSettings.DialTimeout = 10 * time.Second
@@ -265,13 +383,31 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	}
 
 	httpClient.TLSHandshakeTimeout = HTTPClientSettings.TLSHandshakeTimeout
+	httpClient.ResponseHeaderTimeout = HTTPClientSettings.ResponseHeaderTimeout
 	httpClient.ConnReadDeadline = HTTPClientSettings.ConnReadDeadline
 	httpClient.DecompressBody = HTTPClientSettings.DecompressBody
-	httpClient.enableKeepAlive = HTTPClientSettings.EnableKeepAlive
+	httpClient.disableKeepAlives = HTTPClientSettings.DisableKeepAlives
 	httpClient.keepAliveMaxIdle = HTTPClientSettings.MaxIdleConns
+	httpClient.keepAliveMaxIdlePerHost = HTTPClientSettings.MaxIdleConnsPerHost
 	httpClient.keepAliveIdleTimeout = HTTPClientSettings.IdleConnTimeout
+	if HTTPClientSettings.EarlyCloseDrainLimit == 0 {
+		HTTPClientSettings.EarlyCloseDrainLimit = 1 << 20
+	}
+	if HTTPClientSettings.EarlyCloseDrainTimeout == 0 {
+		HTTPClientSettings.EarlyCloseDrainTimeout = 2 * time.Second
+	}
+	if HTTPClientSettings.MaxConcurrentDrains == 0 {
+		HTTPClientSettings.MaxConcurrentDrains = 32
+	}
+	httpClient.earlyCloseDrainLimit = HTTPClientSettings.EarlyCloseDrainLimit
+	httpClient.earlyCloseDrainTimeout = HTTPClientSettings.EarlyCloseDrainTimeout
+	if HTTPClientSettings.MaxConcurrentDrains > 0 {
+		httpClient.drainSlots = make(chan struct{}, HTTPClientSettings.MaxConcurrentDrains)
+	}
 
 	httpClient.defaultUserAgent = HTTPClientSettings.DefaultUserAgent
+	httpClient.followRedirects = HTTPClientSettings.FollowRedirects
+	httpClient.randomTLSExtensionOrder = HTTPClientSettings.RandomTLSExtensionOrder
 
 	httpClient.dialTimeout = HTTPClientSettings.DialTimeout
 	httpClient.dnsRecordsTTL = HTTPClientSettings.DNSRecordsTTL
@@ -287,35 +423,50 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 
 	switch HTTPClientSettings.ForceProtocol {
 	case "h2":
-		h2c, err := newHTTP2Client(httpClient, false, false)
+		h2c, err := newHTTP2Client(httpClient, false, false, false)
 		if err != nil {
 			return nil, err
 		}
 		httpClient.protoClient = h2c
 	case "h3":
-		h3c, err := newHTTP2Client(httpClient, false, true)
+		h3c, err := newHTTP2Client(httpClient, false, true, false)
 		if err != nil {
 			return nil, err
 		}
 		httpClient.protoClient = h3c
 	default:
 		if HTTPClientSettings.EnableHTTP2 || HTTPClientSettings.EnableHTTP3 {
-			h2c, err := newHTTP2Client(httpClient, HTTPClientSettings.EnableHTTP3, false)
+			h2c, err := newHTTP2Client(httpClient, HTTPClientSettings.EnableHTTP3, false, false)
 			if err != nil {
 				return nil, err
 			}
 			httpClient.protoClient = h2c
 		} else {
-			httpClient.protoClient = newHTTP11Client(httpClient)
+			h1c, err := newHTTP2Client(httpClient, false, false, true)
+			if err != nil {
+				return nil, err
+			}
+			httpClient.protoClient = h1c
 		}
 	}
 
 	httpClient.closeDNSCache = func() {
-		if h1, ok := httpClient.protoClient.(*http11Client); ok {
-			h1.pool.dialer.DNSRecords.Close()
+		if transport, ok := httpClient.protoClient.(*http2Client); ok && transport.dialer != nil {
+			transport.dialer.close()
 		}
-		time.Sleep(1 * time.Second)
 	}
+
+	httpClient.WARCWriter, httpClient.warcWriterDoneChannels, httpClient.writerResults, err = HTTPClientSettings.RotatorSettings.newWARCRotator()
+	if err != nil {
+		return nil, err
+	}
+	if httpClient.randomLocalIP {
+		httpClient.interfacesWatcherStop = make(chan bool)
+		httpClient.interfacesWatcherStarted = make(chan bool)
+		go httpClient.getAvailableIPs(HTTPClientSettings.IPv6AnyIP)
+		<-httpClient.interfacesWatcherStarted
+	}
+	constructed = true
 
 	return httpClient, nil
 }
