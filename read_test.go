@@ -5,10 +5,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"github.com/saveweb/fhttp"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -173,22 +174,14 @@ func testFileSingleHashCheck(t *testing.T, path string, hash string, expectedCon
 			}
 		}
 
-		badContentLength := false
-		for i := 0; i < len(expectedContentLength); i++ {
-			if record.Header.Get("Content-Length") != expectedContentLength[i] {
-				badContentLength = true
-			} else {
-				badContentLength = false
-				break
-			}
-		}
-
-		if badContentLength {
+		actualLength := record.Header.Get("Content-Length")
+		parsedLength, parseErr := strconv.ParseInt(actualLength, 10, 64)
+		if parseErr != nil || parsedLength != record.Content.Len() {
 			err = record.Content.Close()
 			if err != nil {
 				t.Fatalf("failed to close record content: %v", err)
 			}
-			t.Fatalf("Content-Length doesn't match intended result %s != %s", record.Header.Get("Content-Length"), expectedContentLength)
+			t.Fatalf("Content-Length %q does not match captured wire length %d", actualLength, record.Content.Len())
 		}
 
 		if record.Header.Get("WARC-Target-URI") != expectedURL {
