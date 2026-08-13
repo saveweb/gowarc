@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	http "github.com/saveweb/fhttp"
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 	tls_client "github.com/saveweb/tls-client"
@@ -144,8 +143,18 @@ func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, 
 		return nil, err
 	}
 
-	requestRecordID := uuid.NewString()
-	responseRecordID := uuid.NewString()
+	requestRecordID, err := newUUID(c.client.recordIDVersion)
+	if err != nil {
+		_ = responseRecord.Content.Close()
+		_ = requestRecord.Content.Close()
+		return nil, err
+	}
+	responseRecordID, err := newUUID(c.client.recordIDVersion)
+	if err != nil {
+		_ = responseRecord.Content.Close()
+		_ = requestRecord.Content.Close()
+		return nil, err
+	}
 	requestRecord.Header.Set("WARC-Record-ID", "<urn:uuid:"+requestRecordID+">")
 	requestRecord.Header.Set("WARC-Concurrent-To", "<urn:uuid:"+responseRecordID+">")
 	responseRecord.Header.Set("WARC-Record-ID", "<urn:uuid:"+responseRecordID+">")

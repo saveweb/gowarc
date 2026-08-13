@@ -58,6 +58,9 @@ type RotatorSettings struct {
 	WARCSize float64
 	// WARCWriterPoolSize defines the number of parallel WARC writers
 	WARCWriterPoolSize int
+	// RecordIDVersion selects the UUID version for generated WARC record IDs.
+	// The default is UUIDv7.
+	RecordIDVersion UUIDVersion
 	// UseInternetArchiveRecordOrder writes each HTTP exchange as response then
 	// request. The default order is request then response.
 	//
@@ -250,6 +253,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 		finish(err)
 		return
 	}
+	warcWriter.RecordIDVersion = settings.RecordIDVersion
 
 	// Write the info record
 	currentWarcinfoRecordID, err = warcWriter.WriteInfoRecord(settings.WarcinfoContent)
@@ -333,6 +337,7 @@ func recordWriter(settings *RotatorSettings, records chan *RecordBatch, done cha
 					finish(err)
 					return
 				}
+				warcWriter.RecordIDVersion = settings.RecordIDVersion
 
 				// Write the info record
 				currentWarcinfoRecordID, err = warcWriter.WriteInfoRecord(settings.WarcinfoContent)

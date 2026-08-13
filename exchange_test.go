@@ -14,9 +14,94 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	http "github.com/saveweb/fhttp"
 	"github.com/saveweb/fhttp/httptest"
 )
+
+func TestExchangeRecordIDVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+
+	for _, test := range []struct {
+		name    string
+		version UUIDVersion
+		want    uuid.Version
+	}{
+		{name: "default v7", want: uuid.Version(7)},
+		{name: "configured v4", version: UUIDv4, want: uuid.Version(4)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			settings := defaultRotatorSettings(t)
+			if test.version != "" {
+				settings.RecordIDVersion = test.version
+			}
+			client, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: settings})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exchange, err := client.Start(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.Copy(io.Discard, exchange.Response.Body); err != nil {
+				t.Fatal(err)
+			}
+			if err := exchange.Response.Body.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := exchange.Wait(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := client.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			files, err := filepath.Glob(filepath.Join(settings.OutputDirectory, "*.warc.gz"))
+			if err != nil || len(files) != 1 {
+				t.Fatalf("WARC files = %v, err = %v", files, err)
+			}
+			file, err := os.Open(files[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			reader, err := NewReader(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recordCount int
+			for {
+				record, err := reader.ReadRecord()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				recordCount++
+				recordID := strings.TrimSuffix(strings.TrimPrefix(record.Header.Get("WARC-Record-ID"), "<urn:uuid:"), ">")
+				id, err := uuid.Parse(recordID)
+				if err != nil {
+					t.Fatalf("parse WARC-Record-ID %q: %v", record.Header.Get("WARC-Record-ID"), err)
+				}
+				if got := id.Version(); got != test.want {
+					t.Errorf("%s UUID version = %d, want %d", record.Header.Get("WARC-Type"), got, test.want)
+				}
+				_ = record.Content.Close()
+			}
+			if recordCount != 3 {
+				t.Errorf("record count = %d, want 3", recordCount)
+			}
+		})
+	}
+}
 
 func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

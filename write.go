@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 )
 
@@ -34,6 +33,7 @@ type Writer struct {
 	BufWriter       *bufio.Writer
 	FileName        string
 	DigestAlgorithm DigestAlgorithm
+	RecordIDVersion UUIDVersion
 	ParallelGZIP    bool
 }
 
@@ -123,7 +123,10 @@ func (w *Writer) WriteRecord(r *Record) (recordID string, err error) {
 	}
 
 	if r.Header.Get("WARC-Record-ID") == "" {
-		recordID = uuid.NewString()
+		recordID, err = newUUID(w.RecordIDVersion)
+		if err != nil {
+			return "", err
+		}
 		r.Header.Set("WARC-Record-ID", "<urn:uuid:"+recordID+">")
 	}
 

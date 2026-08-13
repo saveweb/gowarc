@@ -45,6 +45,9 @@ func main() {
 	rotator := warc.NewRotatorSettings("crawler.example.com")
 	rotator.Prefix = "WEB"
 	rotator.OutputDirectory = "./warcs"
+	// WARC record IDs use UUIDv7 by default. Use UUIDv4 when compatibility
+	// with a consumer that requires random UUIDs is needed.
+	// rotator.RecordIDVersion = warc.UUIDv4
 
 	// Configure HTTP client settings
 	clientSettings := warc.HTTPClientSettings{

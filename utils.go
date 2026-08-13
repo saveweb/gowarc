@@ -81,6 +81,7 @@ func NewWriter(writer io.Writer, fileName string, digestAlgorithm DigestAlgorith
 		return &Writer{
 			FileName:        fileName,
 			DigestAlgorithm: digestAlgorithm,
+			RecordIDVersion: UUIDv7,
 			Compressor:      gzipWriter,
 			BufWriter:       bufio.NewWriter(gzipWriter),
 		}, nil
@@ -99,6 +100,7 @@ func NewWriter(writer io.Writer, fileName string, digestAlgorithm DigestAlgorith
 		return &Writer{
 			FileName:        fileName,
 			DigestAlgorithm: digestAlgorithm,
+			RecordIDVersion: UUIDv7,
 			Compressor:      zstdWriter,
 			BufWriter:       bufio.NewWriter(zstdWriter),
 		}, nil
@@ -106,6 +108,7 @@ func NewWriter(writer io.Writer, fileName string, digestAlgorithm DigestAlgorith
 		return &Writer{
 			FileName:        fileName,
 			DigestAlgorithm: digestAlgorithm,
+			RecordIDVersion: UUIDv7,
 			BufWriter:       bufio.NewWriter(writer),
 		}, nil
 	default:
@@ -155,6 +158,7 @@ func NewRotatorSettings(hostname string) *RotatorSettings {
 		WARCSize:              1000,
 		Compression:           CompressionGzip,
 		digestAlgorithm:       SHA1,
+		RecordIDVersion:       UUIDv7,
 		CompressionDictionary: "",
 		OutputDirectory:       "./",
 	}
@@ -180,6 +184,15 @@ func checkRotatorSettings(settings *RotatorSettings) (err error) {
 
 	if settings.WARCWriterPoolSize == 0 {
 		settings.WARCWriterPoolSize = 1
+	}
+
+	if settings.RecordIDVersion == "" {
+		settings.RecordIDVersion = UUIDv7
+	}
+	switch settings.RecordIDVersion {
+	case UUIDv4, UUIDv7:
+	default:
+		return fmt.Errorf("invalid UUID version: %s", settings.RecordIDVersion)
 	}
 
 	// Add a trailing slash to the output directory

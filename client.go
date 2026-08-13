@@ -76,6 +76,7 @@ type CustomHTTPClient struct {
 	ConnReadDeadline         time.Duration
 	insecureSkipVerifyCerts  bool
 	DigestAlgorithm          DigestAlgorithm
+	recordIDVersion          UUIDVersion
 	closeDNSCache            func()
 	closeDedupeCache         func()
 	randomLocalIP            bool
@@ -316,6 +317,7 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	httpClient.randomLocalIP = HTTPClientSettings.RandomLocalIP
 
 	httpClient.DigestAlgorithm = HTTPClientSettings.DigestAlgorithm
+	httpClient.recordIDVersion = HTTPClientSettings.RotatorSettings.RecordIDVersion
 	HTTPClientSettings.RotatorSettings.digestAlgorithm = HTTPClientSettings.DigestAlgorithm
 
 	httpClient.dedupeOptions = HTTPClientSettings.DedupeOptions
