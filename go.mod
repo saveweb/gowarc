@@ -9,8 +9,8 @@ require (
 	github.com/maypok86/otter v1.2.4
 	github.com/miekg/dns v1.1.72
 	github.com/remeh/sizedwaitgroup v1.0.0
-	github.com/saveweb/fhttp v0.0.0-20260618035705-22ac0b47063a
-	github.com/saveweb/tls-client v0.0.0-20260618035716-2185ff873265
+	github.com/saveweb/fhttp v0.0.0-20260813052251-339e498ce2d1
+	github.com/saveweb/tls-client v0.0.0-20260813065929-a3f1080f38ff
 	github.com/spf13/cobra v1.10.2
 	github.com/ulikunitz/xz v0.5.16
 	github.com/zeebo/blake3 v0.2.4
@@ -27,7 +27,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/saveweb/quic-go-utls v0.0.0-20260618035708-72125476efcb // indirect
+	github.com/saveweb/quic-go-utls v0.0.0-20260813065705-f47ffce23c22 // indirect
 	github.com/saveweb/websocket v0.0.0-20260618035713-525afe407f14 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
