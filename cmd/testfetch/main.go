@@ -44,7 +44,6 @@ func main() {
 		DNSCacheSize:    100,
 		DNSRecordsTTL:   5 * time.Minute,
 		DecompressBody:  true,
-		EnableKeepAlive: true,
 		MaxIdleConns:    10,
 		IdleConnTimeout: 90 * time.Second,
 		DigestAlgorithm: warc.SHA256Base16,
@@ -102,16 +101,6 @@ func main() {
 		fmt.Printf("  Proto: %s\n", resp.Proto)
 		fmt.Printf("  Server: %s\n", resp.Header.Get("Server"))
 		fmt.Printf("  Content-Type: %s\n", resp.Header.Get("Content-Type"))
-	}
-
-	stats := client.GetConnPoolStats()
-	if stats != nil {
-		fmt.Printf("\nConnection Pool Stats:\n")
-		fmt.Printf("  Total Dials: %d\n", stats.TotalDials)
-		fmt.Printf("  Active Conns: %d\n", stats.ActiveConns)
-		fmt.Printf("  Idle Conns: %d\n", stats.IdleConns)
-		fmt.Printf("  Total Hosts: %d\n", stats.TotalHosts)
-		fmt.Printf("  Max Idle: %d\n", stats.MaxIdle)
 	}
 
 	if err := client.Close(); err != nil {

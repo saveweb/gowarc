@@ -34,45 +34,25 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"github.com/internetarchive/gowarc"
 	"io"
-	"net/http"
-	"time"
+
+	http "github.com/saveweb/fhttp"
+	warc "github.com/saveweb/gowarc"
 )
 
 func main() {
 	// Configure WARC settings
-	rotatorSettings := &warc.RotatorSettings{
-		WarcinfoContent: warc.Header{
-			"hostname": "crawler.example.com",
-			"software": "My WARC writing client v1.0", // todo
-		},
-		Prefix:             "WEB",
-		Compression:        "gzip", // todo
-		WARCWriterPoolSize: 4, // Records will be written to 4 WARC files in parallel, it helps maximize the disk IO on some hardware. To be noted, even if we have multiple WARC writers, WARCs are ALWAYS written by pair in the same file. (req/resp pair)
-	}
+	rotator := warc.NewRotatorSettings("crawler.example.com")
+	rotator.Prefix = "WEB"
+	rotator.OutputDirectory = "./warcs"
 
 	// Configure HTTP client settings
 	clientSettings := warc.HTTPClientSettings{
-		RotatorSettings: rotatorSettings,
+		RotatorSettings: rotator,
 		TempDir:         "./temp",
-		DNSServers:      []string{"8.8.8.8", "8.8.4.4"},
-		DedupeOptions: warc.DedupeOptions{
-			LocalDedupe:   true,
-			CDXDedupe:     false,
-			SizeThreshold: 1024, // Only payloads above that threshold will be deduped
-		},
-		DialTimeout:           10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		DNSResolutionTimeout:  5 * time.Second,
-		DNSRecordsTTL:         5 * time.Minute,
-		DNSCacheSize:          10000,
-		MaxReadBeforeTruncate: 1000000000, // todo
-		DecompressBody:        true,
-		FollowRedirects:       true,
-		VerifyCerts:           true,
-		RandomLocalIP:         true,
+		EnableHTTP2:     true,
+		// Keepalive is enabled by default. Set DisableKeepAlives only when
+		// connection reuse is intentionally unwanted.
 	}
 
 	// Create HTTP client
@@ -80,41 +60,39 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer client.Close()
 
-	// The error channel NEED to be consumed, else it will block the
-	// execution of the WARC module
-	go func() {
-		for err := range client.ErrChan {
-			fmt.Errorf("WARC writer error: %s", err.Err.Error())
-		}
-	}()
-
-	// This is optional but the module give a feedback on a channel passed as context value to the
-	// request, this helps knowing when the record has been written to disk. If this is not used, the WARC
-	// writing is asynchronous
-	req, err := http.NewRequest("GET", "https://archive.org", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://archive.org", nil)
 	if err != nil {
 		panic(err)
 	}
-
-	feedbackChan := make(chan warc.FeedbackEvent, 1)
-	req = req.WithContext(warc.WithFeedbackChannel(req.Context(), feedbackChan))
-
-	resp, err := client.Do(req)
+	exchange, err := client.Start(req)
 	if err != nil {
 		panic(err)
 	}
-	defer resp.Body.Close()
-
 	// Process response
-	// Note: the body NEED to be consumed to be written to the WARC file.
-	io.Copy(io.Discard, resp.Body)
-
+	_, _ = io.Copy(io.Discard, exchange.Response.Body)
+	_ = exchange.Response.Body.Close()
 	// Will block until records are actually written to the WARC file
-	<-feedbackChan
+	if _, err := exchange.Wait(context.Background()); err != nil {
+		panic(err)
+	}
+	finalized, err := client.Shutdown(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	_ = finalized.FinalizedFiles
 }
 ```
+
+HTTP/1 captures contain the plaintext HTTP/1 wire bytes seen by the transport.
+HTTP/2 and HTTP/3 captures are deterministic `application/http`
+serializations of the actual stream headers, body data, and trailers.
+Closing a response body early performs a bounded drain; if the message boundary
+cannot be reached, `Exchange.Wait` reports a truncated attempt.
+
+HTTP exchanges are written in request-then-response order by default. Set
+`rotator.UseInternetArchiveRecordOrder = true` for IA-compatible
+response-then-request order.
 
 ## CLI Tools
 
