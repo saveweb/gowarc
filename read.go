@@ -265,7 +265,9 @@ func (r *Reader) ReadRecord(opts ...ReadOpts) (*Record, error) {
 			break
 		}
 		if key, value := splitKeyValue(string(line)); key != "" {
-			header.Set(key, value)
+			// WARC fields such as WARC-Protocol and WARC-Concurrent-To may be
+			// repeated. Preserve every field in arrival order.
+			header.Add(key, value)
 		}
 	}
 
