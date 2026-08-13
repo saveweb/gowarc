@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -166,6 +167,7 @@ func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, 
 
 	// IIPC defines the request IP as the destination and the response IP as the
 	// source. For one direct exchange both are the same transport peer.
+	warnedProtocols := make(map[unknownProtocol]struct{})
 	for _, record := range batch.Records {
 		if pi.RemoteAddr != nil {
 			switch addr := pi.RemoteAddr.(type) {
@@ -175,6 +177,13 @@ func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, 
 				record.Header.Set("WARC-IP-Address", addr.IP.String())
 			}
 		}
+		protocol := pi.Protocol
+		if pi.Protocol == "http/1.1" {
+			if detected := detectHTTPVersion(record.Content); detected != "" {
+				protocol = detected
+			}
+		}
+		addWARCProtocols(record.Header, pi, protocol, warnedProtocols)
 		if pi.CipherSuite != 0 {
 			record.Header.Set("WARC-Cipher-Suite", tlsCipherSuiteName(pi.CipherSuite))
 		}
@@ -218,6 +227,20 @@ func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, 
 		})
 	}
 	return writeResult.Events, nil
+}
+
+func detectHTTPVersion(content spooledtempfile.ReadWriteSeekCloser) string {
+	prefix := make([]byte, 64)
+	n, _ := content.ReadAt(prefix, 0)
+	line := string(prefix[:n])
+	switch {
+	case strings.HasPrefix(line, "HTTP/1.0 "), strings.Contains(line, " HTTP/1.0\r\n"):
+		return "http/1.0"
+	case strings.HasPrefix(line, "HTTP/1.1 "), strings.Contains(line, " HTTP/1.1\r\n"):
+		return "http/1.1"
+	default:
+		return ""
+	}
 }
 
 var _ = (protocolClient)((*http2Client)(nil))

@@ -100,6 +100,7 @@ func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
 	recordIDs := make(map[string]string)
 	concurrentTo := make(map[string]string)
 	recordIPs := make(map[string]string)
+	recordProtocols := make(map[string][]string)
 	for {
 		record, readErr := reader.ReadRecord()
 		if readErr == io.EOF {
@@ -114,6 +115,7 @@ func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
 			recordIDs[recordType] = record.Header.Get("WARC-Record-ID")
 			concurrentTo[recordType] = record.Header.Get("WARC-Concurrent-To")
 			recordIPs[recordType] = record.Header.Get("WARC-IP-Address")
+			recordProtocols[recordType] = record.Header.Values("WARC-Protocol")
 		}
 		content, readErr := io.ReadAll(record.Content)
 		_ = record.Content.Close()
@@ -142,6 +144,11 @@ func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
 	wantIP := listener.Addr().(*net.TCPAddr).IP.String()
 	if recordIPs["request"] != wantIP || recordIPs["response"] != wantIP {
 		t.Fatalf("WARC-IP-Address = %v, want request and response to use peer IP %q", recordIPs, wantIP)
+	}
+	for recordType, protocols := range recordProtocols {
+		if want := []string{"http/1.1"}; !slices.Equal(protocols, want) {
+			t.Fatalf("%s WARC-Protocol = %v, want %v", recordType, protocols, want)
+		}
 	}
 }
 
@@ -384,12 +391,18 @@ func TestExchangeWaitHTTP2SemanticArchive(t *testing.T) {
 			t.Fatal(readErr)
 		}
 		if record.Header.Get("WARC-Type") == "request" {
+			if got := record.Header.Values("WARC-Protocol"); !slices.Equal(got, []string{"h2", "tls/1.3"}) {
+				t.Fatalf("request WARC-Protocol = %v", got)
+			}
 			req, err := http.ReadRequest(bufio.NewReader(record.Content))
 			if err != nil || req.Proto != "HTTP/2.0" {
 				t.Fatalf("semantic request proto=%v err=%v", req, err)
 			}
 		}
 		if record.Header.Get("WARC-Type") == "response" {
+			if got := record.Header.Values("WARC-Protocol"); !slices.Equal(got, []string{"h2", "tls/1.3"}) {
+				t.Fatalf("response WARC-Protocol = %v", got)
+			}
 			resp, err := http.ReadResponse(bufio.NewReader(record.Content), nil)
 			if err != nil || resp.Proto != "HTTP/2.0" || resp.Trailer.Get("X-Final") != "" {
 				// Trailers are populated after consuming the chunked body.
