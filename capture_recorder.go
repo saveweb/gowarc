@@ -1,6 +1,7 @@
 package warc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -57,10 +58,16 @@ func (a *transportCaptureAttempt) Response() fhttp.CaptureStream { return a.resp
 
 func (a *transportCaptureAttempt) Finish(result fhttp.CaptureAttemptResult) {
 	a.once.Do(func() {
+		attemptErr := result.Err
+		if result.Outcome != fhttp.CaptureOutcomeComplete {
+			// Transport teardown frequently reports a secondary socket error.
+			// Preserve the request cancellation cause as the stable API signal.
+			attemptErr = errors.Join(context.Cause(a.meta.Request.Context()), attemptErr)
+		}
 		// A capture-sink failure cannot produce a trustworthy WARC record.
 		// Truncated network responses, however, are retained as partial records.
 		if result.Outcome == fhttp.CaptureOutcomeFailed {
-			err := errors.Join(result.Err, a.request.close(), a.response.close())
+			err := errors.Join(attemptErr, a.request.close(), a.response.close())
 			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: err})
 			return
 		}
@@ -92,7 +99,7 @@ func (a *transportCaptureAttempt) Finish(result fhttp.CaptureAttemptResult) {
 		// the transport goroutine; Exchange.Wait owns the durable completion.
 		go func() {
 			events, writeErr := a.owner.writeCapturedExchange(a.meta.Request.Context(), a.meta.Request.URL.Scheme, requestFile, responseFile, pi, result)
-			a.state.finishAttempt(AttemptResult{Protocol: pi.Protocol, Outcome: result.Outcome, Records: events, Err: errors.Join(result.Err, writeErr)})
+			a.state.finishAttempt(AttemptResult{Protocol: pi.Protocol, Outcome: result.Outcome, Records: events, Err: errors.Join(attemptErr, writeErr)})
 		}()
 	})
 }

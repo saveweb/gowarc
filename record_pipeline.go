@@ -12,7 +12,7 @@ import (
 	"github.com/saveweb/gowarc/pkg/spooledtempfile"
 )
 
-func buildRequestRecord(ctx context.Context, scheme string, client *CustomHTTPClient, source spooledtempfile.ReadWriteSeekCloser) (*Record, string, error) {
+func buildRequestRecord(scheme string, client *CustomHTTPClient, source spooledtempfile.ReadWriteSeekCloser) (*Record, string, error) {
 	record, err := newRecord(client.TempDir)
 	if err != nil {
 		return nil, "", fmt.Errorf("create request record: %w", err)
@@ -31,9 +31,6 @@ func buildRequestRecord(ctx context.Context, scheme string, client *CustomHTTPCl
 	}
 	if _, err := io.Copy(record.Content, source); err != nil {
 		return nil, "", fmt.Errorf("copy request capture: %w", err)
-	}
-	if err := context.Cause(ctx); err != nil {
-		return nil, "", err
 	}
 	target, err := parseRequestTargetURI(scheme, record.Content)
 	if err != nil {
@@ -63,9 +60,6 @@ func buildResponseRecord(ctx context.Context, client *CustomHTTPClient, source s
 	bytesCopied, err := io.Copy(record.Content, source)
 	if err != nil {
 		return nil, fmt.Errorf("copy response capture: %w", err)
-	}
-	if err := context.Cause(ctx); err != nil {
-		return nil, err
 	}
 	if value := ctx.Value(ContextKeySave); value != nil {
 		saveCh, ok := value.(chan bool)

@@ -334,6 +334,49 @@ func TestExchangeWaitArchivesNetworkDisconnectAsTruncated(t *testing.T) {
 	}
 }
 
+func TestExchangeWaitArchivesContextCancellationAsTruncated(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("x", 32))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: defaultRotatorSettings(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	exchange, err := client.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 32)
+	if _, err := io.ReadFull(exchange.Response.Body, buf); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	_, _ = io.Copy(io.Discard, exchange.Response.Body)
+	_ = exchange.Response.Body.Close()
+
+	result, err := exchange.Wait(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait error = %v, want context.Canceled", err)
+	}
+	if len(result.Attempts) != 1 || result.Attempts[0].Outcome != http.CaptureOutcomeTruncated {
+		t.Fatalf("attempts = %#v", result.Attempts)
+	}
+	if len(result.Records) != 2 {
+		t.Fatalf("records = %d, want request and truncated response", len(result.Records))
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestExchangeWaitHTTP2SemanticArchive(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)

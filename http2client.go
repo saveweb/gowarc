@@ -130,7 +130,7 @@ func (c *http2Client) Do(ctx context.Context, req *http.Request) (*http.Response
 }
 
 func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, pi *protocolInfo, captureResult http.CaptureAttemptResult) (FeedbackEvent, error) {
-	requestRecord, target, err := buildRequestRecord(ctx, scheme, c.client, reqTemp)
+	requestRecord, target, err := buildRequestRecord(scheme, c.client, reqTemp)
 	if err != nil {
 		_ = respTemp.Close()
 		return nil, err
@@ -203,12 +203,11 @@ func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, 
 		record.Header.Set("Content-Length", strconv.FormatInt(size, 10))
 	}
 
-	select {
-	case c.client.WARCWriter <- batch:
-		closeRecords = false
-	case <-ctx.Done():
-		return nil, context.Cause(ctx)
-	}
+	// The request context owns network I/O, but cancellation must not discard
+	// bytes that the transport has already committed to this capture attempt.
+	// finishAttempt keeps Shutdown aware of this writer submission.
+	c.client.WARCWriter <- batch
+	closeRecords = false
 	writeResult, err := batch.Wait(context.Background())
 	if err != nil {
 		return nil, err
