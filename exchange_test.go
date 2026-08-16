@@ -125,6 +125,42 @@ func TestExchangeRecordIDVersion(t *testing.T) {
 	}
 }
 
+func TestExchangeCommitAcceptsHEADContentLengthWithoutBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "123")
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	settings := defaultRotatorSettings(t)
+	client, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: settings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	req, err := http.NewRequest(http.MethodHead, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange, err := client.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exchange.Response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", exchange.Response.StatusCode, http.StatusNotFound)
+	}
+	if err := exchange.Response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := exchange.Commit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 2 {
+		t.Fatalf("records = %d, want request and response", len(result.Records))
+	}
+}
+
 func TestExchangeCommitPreservesHTTP1WireBytes(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

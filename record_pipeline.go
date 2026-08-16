@@ -40,7 +40,7 @@ func buildRequestRecord(scheme string, client *CustomHTTPClient, source spooledt
 	return record, target, nil
 }
 
-func buildResponseRecord(ctx context.Context, client *CustomHTTPClient, source spooledtempfile.ReadWriteSeekCloser, target string, truncated bool) (*Record, error) {
+func buildResponseRecord(ctx context.Context, client *CustomHTTPClient, source spooledtempfile.ReadWriteSeekCloser, target, requestMethod string, truncated bool) (*Record, error) {
 	record, err := newRecord(client.TempDir)
 	if err != nil {
 		return nil, fmt.Errorf("create response record: %w", err)
@@ -65,11 +65,12 @@ func buildResponseRecord(ctx context.Context, client *CustomHTTPClient, source s
 		return nil, fmt.Errorf("seek response for parsing: %w", err)
 	}
 	responseReader := bufio.NewReader(record.Content)
+	request := &http.Request{Method: requestMethod}
 	var resp *http.Response
 	// application/http may contain one or more informational responses before
 	// the final response whose entity body determines the payload digest.
 	for {
-		resp, err = http.ReadResponse(responseReader, nil)
+		resp, err = http.ReadResponse(responseReader, request)
 		if err != nil {
 			if truncated {
 				failed = false

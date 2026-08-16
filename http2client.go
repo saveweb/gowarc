@@ -128,13 +128,13 @@ func (c *http2Client) Do(ctx context.Context, req *http.Request) (*http.Response
 	return resp, nil
 }
 
-func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, pi *protocolInfo, captureResult http.CaptureAttemptResult) (FeedbackEvent, error) {
+func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme, requestMethod string, reqTemp, respTemp spooledtempfile.ReadWriteSeekCloser, pi *protocolInfo, captureResult http.CaptureAttemptResult) (FeedbackEvent, error) {
 	requestRecord, target, err := buildRequestRecord(scheme, c.client, reqTemp)
 	if err != nil {
 		_ = respTemp.Close()
 		return nil, err
 	}
-	responseRecord, err := buildResponseRecord(ctx, c.client, respTemp, target, captureResult.Outcome == http.CaptureOutcomeTruncated)
+	responseRecord, err := buildResponseRecord(ctx, c.client, respTemp, target, requestMethod, captureResult.Outcome == http.CaptureOutcomeTruncated)
 	if err != nil {
 		_ = requestRecord.Content.Close()
 		return nil, err

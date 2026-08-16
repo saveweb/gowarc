@@ -103,7 +103,7 @@ func (a *transportCaptureAttempt) Finish(result fhttp.CaptureAttemptResult) {
 				a.state.finishAttempt(AttemptResult{Protocol: pi.Protocol, Outcome: result.Outcome, cleanupErr: closeErr})
 				return
 			}
-			events, writeErr := a.owner.writeCapturedExchange(a.meta.Request.Context(), a.meta.Request.URL.Scheme, requestFile, responseFile, pi, result)
+			events, writeErr := a.owner.writeCapturedExchange(a.meta.Request.Context(), a.meta.Request.URL.Scheme, a.meta.Request.Method, requestFile, responseFile, pi, result)
 			a.state.finishAttempt(AttemptResult{Protocol: pi.Protocol, Outcome: result.Outcome, Records: events, Err: errors.Join(attemptErr, writeErr)})
 		}()
 	})
