@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -18,6 +19,27 @@ import (
 	http "github.com/saveweb/fhttp"
 	"github.com/saveweb/fhttp/httptest"
 )
+
+func TestExchangeResultDoesNotRepeatWrappedAttemptError(t *testing.T) {
+	attemptErr := errors.New("dial tcp4 192.0.2.1:443: i/o timeout")
+	networkErr := fmt.Errorf("http2client: doing request: %w", attemptErr)
+	state := &exchangeState{
+		decision:   exchangeCommit,
+		networkErr: networkErr,
+		attempts:   []AttemptResult{{Err: attemptErr}},
+	}
+
+	result := state.result()
+	if result.Err == nil {
+		t.Fatal("result error is nil")
+	}
+	if got := strings.Count(result.Err.Error(), attemptErr.Error()); got != 1 {
+		t.Fatalf("attempt error appears %d times in %q", got, result.Err)
+	}
+	if !errors.Is(result.Err, attemptErr) {
+		t.Fatalf("result error does not wrap attempt error: %v", result.Err)
+	}
+}
 
 func TestExchangeRecordIDVersion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

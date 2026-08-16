@@ -234,7 +234,10 @@ func (c *CustomHTTPClient) Do(req *http.Request) (*http.Response, error) {
 }
 
 // Start executes req and returns an Exchange that the caller must finish with
-// Commit or Discard after inspecting the response.
+// Commit or Discard after inspecting the response. Start can return both a
+// non-nil Exchange and an error when a failed transport attempt was captured.
+// Commit includes that Start error in its complete result, so callers must not
+// join the two errors.
 func (c *CustomHTTPClient) Start(req *http.Request) (*Exchange, error) {
 	return c.start(req, exchangeUndecided)
 }

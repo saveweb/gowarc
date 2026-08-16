@@ -2,10 +2,68 @@ package warc
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
+	"net"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
+
+type timeoutDialError struct{}
+
+func (timeoutDialError) Error() string   { return "connect timed out" }
+func (timeoutDialError) Timeout() bool   { return true }
+func (timeoutDialError) Temporary() bool { return true }
+
+func TestDialParallelReportsBothAddressFamilies(t *testing.T) {
+	ipv6Err := errors.New("IPv6 route unavailable")
+	ipv4Err := timeoutDialError{}
+	dialer := &customDialer{
+		client: &CustomHTTPClient{},
+		Dialer: net.Dialer{
+			Timeout: time.Second,
+			Control: func(network, _ string, _ syscall.RawConn) error {
+				switch network {
+				case "tcp6":
+					return ipv6Err
+				case "tcp4":
+					return ipv4Err
+				default:
+					return errors.New("unexpected network " + network)
+				}
+			},
+		},
+	}
+
+	ipv6Addr := "[2001:db8::1]:443"
+	ipv4Addr := "192.0.2.1:443"
+	_, _, err := dialer.dialParallel(
+		context.Background(), "tcp", ipv6Addr, ipv4Addr,
+		net.ParseIP("2001:db8::1"), net.ParseIP("192.0.2.1"),
+	)
+	if err == nil {
+		t.Fatal("dialParallel returned nil error")
+	}
+	for _, want := range []string{"IPv6 " + ipv6Addr, "IPv4 " + ipv4Addr, ipv6Err.Error(), ipv4Err.Error()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+	if !errors.Is(err, ipv6Err) {
+		t.Errorf("error does not wrap IPv6 error: %v", err)
+	}
+	var gotTimeout timeoutDialError
+	if !errors.As(err, &gotTimeout) {
+		t.Errorf("error does not wrap IPv4 error: %v", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Errorf("error does not preserve timeout semantics: %v", err)
+	}
+}
 
 func TestParseRequestTargetURI(t *testing.T) {
 	// valid minimal request

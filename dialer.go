@@ -130,6 +130,39 @@ type dialResult struct {
 	ip      net.IP
 }
 
+type dualStackDialError struct {
+	ipv6Addr string
+	ipv6Err  error
+	ipv4Addr string
+	ipv4Err  error
+}
+
+func (e *dualStackDialError) Error() string {
+	return fmt.Sprintf("dual-stack dial failed: IPv6 %s: %v; IPv4 %s: %v", e.ipv6Addr, e.ipv6Err, e.ipv4Addr, e.ipv4Err)
+}
+
+func (e *dualStackDialError) Unwrap() []error {
+	return []error{e.ipv6Err, e.ipv4Err}
+}
+
+func (e *dualStackDialError) Timeout() bool {
+	return isNetworkTimeout(e.ipv6Err) || isNetworkTimeout(e.ipv4Err)
+}
+
+func (e *dualStackDialError) Temporary() bool {
+	return isTemporaryNetworkError(e.ipv6Err) || isTemporaryNetworkError(e.ipv4Err)
+}
+
+func isNetworkTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func isTemporaryNetworkError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Temporary()
+}
+
 func (d *customDialer) dialParallel(ctx context.Context, network string, primaryAddr, fallbackAddr string, primaryIP, fallbackIP net.IP) (net.Conn, net.IP, error) {
 	baseNetwork := strings.TrimSuffix(strings.TrimSuffix(network, "4"), "6")
 	if fallbackAddr == "" && primaryAddr == "" {
@@ -194,7 +227,12 @@ func (d *customDialer) dialParallel(ctx context.Context, network string, primary
 				fallback = res
 			}
 			if primary.done && fallback.done {
-				return nil, nil, primary.err
+				return nil, nil, &dualStackDialError{
+					ipv6Addr: primaryAddr,
+					ipv6Err:  primary.err,
+					ipv4Addr: fallbackAddr,
+					ipv4Err:  fallback.err,
+				}
 			}
 			if res.primary && fallbackTimer.Stop() {
 				fallbackTimer.Reset(0)

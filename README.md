@@ -68,13 +68,19 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	exchange, err := client.Start(req)
-	if err != nil {
-		panic(err)
+	exchange, startErr := client.Start(req)
+	if exchange == nil {
+		panic(startErr)
 	}
 	// Releases the capture on every early-return path. Once Commit succeeds,
 	// this deferred Discard cannot change the decision.
 	defer exchange.Discard(context.Background())
+	if startErr != nil {
+		// Commit includes the Start error in its complete result. Do not join
+		// startErr again, or the same transport failure will be printed twice.
+		_, err := exchange.Commit(context.Background())
+		panic(err)
+	}
 	// Process response
 	_, _ = io.Copy(io.Discard, exchange.Response.Body)
 	_ = exchange.Response.Body.Close()

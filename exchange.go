@@ -49,7 +49,8 @@ type Exchange struct {
 
 // Commit retains every transport attempt belonging to the logical request and
 // waits until its records have been accepted by a WARC writer. Repeating Commit
-// is harmless and returns the same result.
+// is harmless and returns the same result. Its result includes any error
+// already returned by Start for this exchange.
 func (e *Exchange) Commit(ctx context.Context) (ExchangeResult, error) {
 	if err := e.decide(exchangeCommit); err != nil {
 		return ExchangeResult{}, err
@@ -263,17 +264,34 @@ func (s *exchangeState) resultLocked() ExchangeResult {
 		Attempts: append([]AttemptResult(nil), s.attempts...),
 	}
 	if s.decision == exchangeCommit {
-		result.Err = s.networkErr
+		result.Err = joinDistinctError(result.Err, s.networkErr)
 	} else {
-		result.Err = s.responseCloseErr
+		result.Err = joinDistinctError(result.Err, s.responseCloseErr)
 	}
 	for _, attempt := range s.attempts {
 		result.Records = append(result.Records, attempt.Records...)
 		if s.decision == exchangeCommit {
-			result.Err = errors.Join(result.Err, attempt.Err, attempt.cleanupErr)
+			result.Err = joinDistinctError(result.Err, attempt.Err)
+			result.Err = joinDistinctError(result.Err, attempt.cleanupErr)
 		} else {
-			result.Err = errors.Join(result.Err, attempt.cleanupErr)
+			result.Err = joinDistinctError(result.Err, attempt.cleanupErr)
 		}
 	}
 	return result
+}
+
+func joinDistinctError(current, next error) error {
+	if next == nil {
+		return current
+	}
+	if current == nil {
+		return next
+	}
+	if errors.Is(current, next) {
+		return current
+	}
+	if errors.Is(next, current) {
+		return next
+	}
+	return errors.Join(current, next)
 }
