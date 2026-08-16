@@ -19,18 +19,11 @@ type contextKey string
 
 const (
 	ContextKeyFeedback contextKey = "feedback"
-	ContextKeySave     contextKey = "save"
 )
 
 func WithFeedbackChannel(ctx context.Context, feedbackChan chan FeedbackEvent) context.Context {
 	return context.WithValue(ctx, ContextKeyFeedback, feedbackChan)
 }
-
-func WithSaveChannel(ctx context.Context, ch chan bool) context.Context {
-	return context.WithValue(ctx, ContextKeySave, ch)
-}
-
-var errDiscarded = errors.New("response discarded")
 
 type dnsExchanger interface {
 	ExchangeContext(ctx context.Context, m *dns.Msg, address string) (r *dns.Msg, rtt time.Duration, err error)

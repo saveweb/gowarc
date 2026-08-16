@@ -137,9 +137,6 @@ func (c *http2Client) writeCapturedExchange(ctx context.Context, scheme string, 
 	responseRecord, err := buildResponseRecord(ctx, c.client, respTemp, target, captureResult.Outcome == http.CaptureOutcomeTruncated)
 	if err != nil {
 		_ = requestRecord.Content.Close()
-		if errors.Is(err, errDiscarded) {
-			return nil, nil
-		}
 		return nil, err
 	}
 

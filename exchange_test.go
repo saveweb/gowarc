@@ -56,7 +56,7 @@ func TestExchangeRecordIDVersion(t *testing.T) {
 			if err := exchange.Response.Body.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := exchange.Wait(context.Background()); err != nil {
+			if _, err := exchange.Commit(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			if err := client.Close(); err != nil {
@@ -103,7 +103,7 @@ func TestExchangeRecordIDVersion(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
+func TestExchangeCommitPreservesHTTP1WireBytes(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
 	if err := exchange.Response.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	result, err := exchange.Wait(context.Background())
+	result, err := exchange.Commit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestExchangeWaitPreservesHTTP1WireBytes(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitSupportsInternetArchiveRecordOrder(t *testing.T) {
+func TestExchangeCommitSupportsInternetArchiveRecordOrder(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -260,7 +260,7 @@ func TestExchangeWaitSupportsInternetArchiveRecordOrder(t *testing.T) {
 	if err := exchange.Response.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exchange.Wait(context.Background()); err != nil {
+	if _, err := exchange.Commit(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Close(); err != nil {
@@ -297,7 +297,170 @@ func TestExchangeWaitSupportsInternetArchiveRecordOrder(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitReturnsWriterFailure(t *testing.T) {
+func TestExchangeDiscardWritesNoHTTPRecords(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "discard me")
+	}))
+	defer server.Close()
+
+	settings := defaultRotatorSettings(t)
+	client, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: settings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	exchange, err := client.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, exchange.Response.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := exchange.Response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := exchange.Discard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := exchange.Discard(context.Background()); err != nil {
+		t.Fatalf("repeated Discard: %v", err)
+	}
+	if _, err := exchange.Commit(context.Background()); !errors.Is(err, ErrExchangeAlreadyDecided) {
+		t.Fatalf("Commit after Discard error = %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := filepath.Glob(filepath.Join(settings.OutputDirectory, "*.warc.gz"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("WARC files = %v, err = %v", files, err)
+	}
+	file, err := os.Open(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	reader, err := NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := reader.ReadRecord()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = record.Content.Close()
+	if got := record.Header.Get("WARC-Type"); got != "warcinfo" {
+		t.Fatalf("first record type = %q", got)
+	}
+	if _, err := reader.ReadRecord(); err != io.EOF {
+		t.Fatalf("record after warcinfo error = %v, want EOF", err)
+	}
+}
+
+func TestExchangeDiscardClosesUnreadBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("x", 32))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client, err := NewWARCWritingHTTPClient(HTTPClientSettings{
+		RotatorSettings:      defaultRotatorSettings(t),
+		EarlyCloseDrainLimit: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	exchange, err := client.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := exchange.Discard(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExchangeCommitCanResumeWaitingAfterTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, strings.Repeat("x", 4096))
+	}))
+	defer server.Close()
+
+	client, err := NewWARCWritingHTTPClient(HTTPClientSettings{RotatorSettings: defaultRotatorSettings(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	exchange, err := client.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := exchange.Commit(waitCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Commit error = %v, want context.Canceled", err)
+	}
+	if _, err := io.Copy(io.Discard, exchange.Response.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := exchange.Response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := exchange.Commit(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Records) != 2 {
+		t.Fatalf("records = %d, want 2", len(result.Records))
+	}
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShutdownDiscardsUndecidedExchange(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.Repeat("x", 32))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client, err := NewWARCWritingHTTPClient(HTTPClientSettings{
+		RotatorSettings:      defaultRotatorSettings(t),
+		EarlyCloseDrainLimit: -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	exchange, err := client.Start(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := client.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exchange.Commit(context.Background()); !errors.Is(err, ErrExchangeAlreadyDecided) {
+		t.Fatalf("Commit after Shutdown error = %v", err)
+	}
+}
+
+func TestExchangeCommitReturnsWriterFailure(t *testing.T) {
 	server := newTestImageServer(t, http.StatusOK)
 	defer server.Close()
 	settings := NewRotatorSettings("writer-failure.test")
@@ -315,7 +478,7 @@ func TestExchangeWaitReturnsWriterFailure(t *testing.T) {
 	_ = exchange.Response.Body.Close()
 	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	result, err := exchange.Wait(waitCtx)
+	result, err := exchange.Commit(waitCtx)
 	if err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Fatalf("Wait error = %v, result = %#v", err, result)
 	}
@@ -324,7 +487,7 @@ func TestExchangeWaitReturnsWriterFailure(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitReportsEarlyCloseAsTruncated(t *testing.T) {
+func TestExchangeCommitReportsEarlyCloseAsTruncated(t *testing.T) {
 	server, _ := newConnectionCountingServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, strings.Repeat("x", 4096))
 	}))
@@ -342,7 +505,7 @@ func TestExchangeWaitReportsEarlyCloseAsTruncated(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = exchange.Response.Body.Close()
-	result, err := exchange.Wait(context.Background())
+	result, err := exchange.Commit(context.Background())
 	if err == nil {
 		t.Fatal("Wait returned nil error for an abandoned response")
 	}
@@ -354,7 +517,7 @@ func TestExchangeWaitReportsEarlyCloseAsTruncated(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitArchivesNetworkDisconnectAsTruncated(t *testing.T) {
+func TestExchangeCommitArchivesNetworkDisconnectAsTruncated(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +552,7 @@ func TestExchangeWaitArchivesNetworkDisconnectAsTruncated(t *testing.T) {
 		t.Fatalf("body error = %v, want unexpected EOF", err)
 	}
 	_ = exchange.Response.Body.Close()
-	result, err := exchange.Wait(context.Background())
+	result, err := exchange.Commit(context.Background())
 	if err == nil {
 		t.Fatal("Wait returned nil error after network disconnect")
 	}
@@ -419,7 +582,7 @@ func TestExchangeWaitArchivesNetworkDisconnectAsTruncated(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitArchivesContextCancellationAsTruncated(t *testing.T) {
+func TestExchangeCommitArchivesContextCancellationAsTruncated(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "4096")
 		w.WriteHeader(http.StatusOK)
@@ -447,7 +610,7 @@ func TestExchangeWaitArchivesContextCancellationAsTruncated(t *testing.T) {
 	_, _ = io.Copy(io.Discard, exchange.Response.Body)
 	_ = exchange.Response.Body.Close()
 
-	result, err := exchange.Wait(context.Background())
+	result, err := exchange.Commit(context.Background())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Wait error = %v, want context.Canceled", err)
 	}
@@ -462,7 +625,7 @@ func TestExchangeWaitArchivesContextCancellationAsTruncated(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitHTTP2SemanticArchive(t *testing.T) {
+func TestExchangeCommitHTTP2SemanticArchive(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Trailer", "X-Final")
@@ -490,7 +653,7 @@ func TestExchangeWaitHTTP2SemanticArchive(t *testing.T) {
 		t.Fatalf("body = %q, err = %v", body, err)
 	}
 	_ = exchange.Response.Body.Close()
-	result, err := exchange.Wait(context.Background())
+	result, err := exchange.Commit(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +710,7 @@ func TestExchangeWaitHTTP2SemanticArchive(t *testing.T) {
 	}
 }
 
-func TestExchangeWaitHTTP2EarlyCloseArchivesPartialResponse(t *testing.T) {
+func TestExchangeCommitHTTP2EarlyCloseArchivesPartialResponse(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, strings.Repeat("x", 1024))
 		w.(http.Flusher).Flush()
@@ -574,7 +737,7 @@ func TestExchangeWaitHTTP2EarlyCloseArchivesPartialResponse(t *testing.T) {
 	if err := exchange.Response.Body.Close(); err != nil {
 		t.Fatal(err)
 	}
-	result, err := exchange.Wait(context.Background())
+	result, err := exchange.Commit(context.Background())
 	if err == nil {
 		t.Fatal("Wait returned nil error for an abandoned HTTP/2 stream")
 	}

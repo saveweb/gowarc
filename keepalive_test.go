@@ -54,7 +54,7 @@ func TestDecompressedBodyStillCompletesTransportCapture(t *testing.T) {
 		if err := exchange.Response.Body.Close(); err != nil {
 			t.Fatal(err)
 		}
-		result, err := exchange.Wait(context.Background())
+		result, err := exchange.Commit(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -190,7 +190,7 @@ func TestHTTP2KeepAliveAndDisableFlag(t *testing.T) {
 					t.Fatal(err)
 				}
 				_ = exchange.Response.Body.Close()
-				if _, err := exchange.Wait(context.Background()); err != nil {
+				if _, err := exchange.Commit(context.Background()); err != nil {
 					t.Fatal(err)
 				}
 			}

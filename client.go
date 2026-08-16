@@ -98,6 +98,7 @@ type CustomHTTPClient struct {
 	shutdownOnce             sync.Once
 	shutdownDone             chan struct{}
 	shutdownResult           FinalizeResult
+	pendingExchanges         map[*exchangeState]struct{}
 
 	CDXDedupeTotalBytes          *atomic.Int64
 	DoppelgangerDedupeTotalBytes *atomic.Int64
@@ -131,8 +132,16 @@ func (c *CustomHTTPClient) Shutdown(ctx context.Context) (FinalizeResult, error)
 	c.shutdownOnce.Do(func() {
 		c.lifecycleMu.Lock()
 		c.closing = true
+		pending := make([]*exchangeState, 0, len(c.pendingExchanges))
+		for state := range c.pendingExchanges {
+			pending = append(pending, state)
+		}
 		c.lifecycleMu.Unlock()
-		go c.runShutdown()
+		stopTransportEarly := false
+		for _, state := range pending {
+			stopTransportEarly = state.closeForShutdown() || stopTransportEarly
+		}
+		go c.runShutdown(stopTransportEarly)
 	})
 	select {
 	case <-c.shutdownDone:
@@ -144,13 +153,17 @@ func (c *CustomHTTPClient) Shutdown(ctx context.Context) (FinalizeResult, error)
 	}
 }
 
-func (c *CustomHTTPClient) runShutdown() {
+func (c *CustomHTTPClient) runShutdown(stopTransportEarly bool) {
 	defer close(c.shutdownDone)
 	var wg sync.WaitGroup
-	if c.protoClient != nil {
+	if stopTransportEarly && c.protoClient != nil {
 		c.protoClient.Shutdown()
 	}
 	c.WaitGroup.Wait()
+	c.compatWG.Wait()
+	if !stopTransportEarly && c.protoClient != nil {
+		c.protoClient.Shutdown()
+	}
 
 	close(c.WARCWriter)
 
@@ -171,7 +184,6 @@ func (c *CustomHTTPClient) runShutdown() {
 		finalizedFiles = append(finalizedFiles, result.FinalizedFiles...)
 	}
 
-	c.compatWG.Wait()
 	close(c.ErrChan)
 
 	if c.randomLocalIP {
@@ -197,14 +209,14 @@ func (c *CustomHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	}
 	c.compatWG.Add(1)
 	c.lifecycleMu.Unlock()
-	exchange, err := c.Start(req)
+	exchange, err := c.start(req, exchangeCommit)
 	if exchange == nil {
 		c.compatWG.Done()
 		return nil, err
 	}
 	go func() {
 		defer c.compatWG.Done()
-		result, _ := exchange.Wait(context.Background())
+		result, _ := exchange.wait(context.Background())
 		var archiveErrs []error
 		for _, attempt := range result.Attempts {
 			archiveErrs = append(archiveErrs, attempt.Err)
@@ -214,16 +226,20 @@ func (c *CustomHTTPClient) Do(req *http.Request) (*http.Response, error) {
 			return
 		}
 		select {
-		case c.ErrChan <- &Error{Err: archiveErr, Func: "Exchange.Wait"}:
+		case c.ErrChan <- &Error{Err: archiveErr, Func: "Exchange.Commit"}:
 		default:
 		}
 	}()
 	return exchange.Response, err
 }
 
-// Start executes req and returns an Exchange whose Wait method reports the
-// durable archival result independently from receiving response headers.
+// Start executes req and returns an Exchange that the caller must finish with
+// Commit or Discard after inspecting the response.
 func (c *CustomHTTPClient) Start(req *http.Request) (*Exchange, error) {
+	return c.start(req, exchangeUndecided)
+}
+
+func (c *CustomHTTPClient) start(req *http.Request, decision exchangeDecision) (*Exchange, error) {
 	if req == nil {
 		return nil, errors.New("warc: nil request")
 	}
@@ -245,7 +261,8 @@ func (c *CustomHTTPClient) Start(req *http.Request) (*Exchange, error) {
 			return nil, errors.New("warc: feedback channel must be buffered")
 		}
 	}
-	state := newExchangeState(c, feedback)
+	state := newExchangeState(c, feedback, decision)
+	c.pendingExchanges[state] = struct{}{}
 	ctx := context.WithValue(req.Context(), exchangeContextKey{}, state)
 	req = req.Clone(ctx)
 	req.URL.Scheme = strings.ToLower(req.URL.Scheme)
@@ -253,8 +270,15 @@ func (c *CustomHTTPClient) Start(req *http.Request) (*Exchange, error) {
 	c.lifecycleMu.Unlock()
 	resp, err := c.protoClient.Do(ctx, req)
 	c.WaitGroup.Done()
+	state.attachResponse(resp)
 	exchange := &Exchange{Response: resp, state: state}
 	return exchange, err
+}
+
+func (c *CustomHTTPClient) unregisterExchange(state *exchangeState) {
+	c.lifecycleMu.Lock()
+	delete(c.pendingExchanges, state)
+	c.lifecycleMu.Unlock()
 }
 
 func (c *CustomHTTPClient) Get(url string) (*http.Response, error) {
@@ -303,6 +327,7 @@ func NewWARCWritingHTTPClient(HTTPClientSettings HTTPClientSettings) (httpClient
 	}
 	httpClient = new(CustomHTTPClient)
 	httpClient.shutdownDone = make(chan struct{})
+	httpClient.pendingExchanges = make(map[*exchangeState]struct{})
 
 	httpClient.DataTotal = &DataTotal
 

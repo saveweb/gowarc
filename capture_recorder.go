@@ -67,21 +67,21 @@ func (a *transportCaptureAttempt) Finish(result fhttp.CaptureAttemptResult) {
 		// A capture-sink failure cannot produce a trustworthy WARC record.
 		// Truncated network responses, however, are retained as partial records.
 		if result.Outcome == fhttp.CaptureOutcomeFailed {
-			err := errors.Join(attemptErr, a.request.close(), a.response.close())
-			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: err})
+			cleanupErr := errors.Join(a.request.close(), a.response.close())
+			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: attemptErr, cleanupErr: cleanupErr})
 			return
 		}
 
 		requestFile, err := a.request.committedFile()
 		if err != nil {
-			_ = a.response.close()
-			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: err})
+			cleanupErr := errors.Join(a.request.close(), a.response.close())
+			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: err, cleanupErr: cleanupErr})
 			return
 		}
 		responseFile, err := a.response.committedFile()
 		if err != nil {
-			_ = requestFile.Close()
-			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: err})
+			cleanupErr := errors.Join(requestFile.Close(), a.response.close())
+			a.state.finishAttempt(AttemptResult{Protocol: string(a.meta.Protocol), Outcome: result.Outcome, Err: err, cleanupErr: cleanupErr})
 			return
 		}
 
@@ -96,8 +96,13 @@ func (a *transportCaptureAttempt) Finish(result fhttp.CaptureAttemptResult) {
 			pi.Protocol = "http/1.1"
 		}
 		// Record construction and WARC I/O can outlive RoundTrip. Keep them off
-		// the transport goroutine; Exchange.Wait owns the durable completion.
+		// the transport goroutine; Exchange.Commit owns durable completion.
 		go func() {
+			if a.state.waitForDecision() == exchangeDiscard {
+				closeErr := errors.Join(requestFile.Close(), responseFile.Close())
+				a.state.finishAttempt(AttemptResult{Protocol: pi.Protocol, Outcome: result.Outcome, cleanupErr: closeErr})
+				return
+			}
 			events, writeErr := a.owner.writeCapturedExchange(a.meta.Request.Context(), a.meta.Request.URL.Scheme, requestFile, responseFile, pi, result)
 			a.state.finishAttempt(AttemptResult{Protocol: pi.Protocol, Outcome: result.Outcome, Records: events, Err: errors.Join(attemptErr, writeErr)})
 		}()

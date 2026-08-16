@@ -72,11 +72,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	// Releases the capture on every early-return path. Once Commit succeeds,
+	// this deferred Discard cannot change the decision.
+	defer exchange.Discard(context.Background())
 	// Process response
 	_, _ = io.Copy(io.Discard, exchange.Response.Body)
 	_ = exchange.Response.Body.Close()
-	// Will block until records are actually written to the WARC file
-	if _, err := exchange.Wait(context.Background()); err != nil {
+	// Keep the exchange and wait until its records reach the WARC writer.
+	if _, err := exchange.Commit(context.Background()); err != nil {
 		panic(err)
 	}
 	finalized, err := client.Shutdown(context.Background())
@@ -91,7 +94,9 @@ HTTP/1 captures contain the plaintext HTTP/1 wire bytes seen by the transport.
 HTTP/2 and HTTP/3 captures are deterministic `application/http`
 serializations of the actual stream headers, body data, and trailers.
 Closing a response body early performs a bounded drain; if the message boundary
-cannot be reached, `Exchange.Wait` reports a truncated attempt.
+cannot be reached, `Exchange.Commit` reports a truncated attempt. To reject a
+capture after inspecting its response, call `Exchange.Discard`; it closes any
+unread response body and releases the captured temporary data.
 
 HTTP exchanges are written in request-then-response order by default. Set
 `rotator.UseInternetArchiveRecordOrder = true` for IA-compatible

@@ -61,20 +61,6 @@ func buildResponseRecord(ctx context.Context, client *CustomHTTPClient, source s
 	if err != nil {
 		return nil, fmt.Errorf("copy response capture: %w", err)
 	}
-	if value := ctx.Value(ContextKeySave); value != nil {
-		saveCh, ok := value.(chan bool)
-		if !ok {
-			return nil, errors.New("save channel has invalid type")
-		}
-		select {
-		case save, ok := <-saveCh:
-			if !ok || !save {
-				return nil, errDiscarded
-			}
-		case <-ctx.Done():
-			return nil, context.Cause(ctx)
-		}
-	}
 	if _, err := record.Content.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("seek response for parsing: %w", err)
 	}
