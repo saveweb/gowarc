@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/bogdanfinn/utls v1.7.7-barnius
 	github.com/google/uuid v1.6.0
-	github.com/klauspost/compress v1.19.1
+	github.com/klauspost/compress v1.19.2
 	github.com/maypok86/otter v1.2.4
 	github.com/miekg/dns v1.1.72
 	github.com/remeh/sizedwaitgroup v1.0.0
